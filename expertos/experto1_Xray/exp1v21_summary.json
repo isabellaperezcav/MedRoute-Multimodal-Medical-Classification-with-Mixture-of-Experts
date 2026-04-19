@@ -1,0 +1,88 @@
+{
+  "experiment": "exp1v21",
+  "model": "convnextv2_base.fcmae_ft_in22k_in1k_384",
+  "architecture": "CXRExpertSingleHead (ConvNeXt-V2-Base 384)",
+  "loss": "AsymmetricLoss(gamma_pos=0,gamma_neg=4,prob_shift=0.05)",
+  "n_classes": 6,
+  "classes": [
+    "Infiltration",
+    "Effusion",
+    "Atelectasis",
+    "Nodule",
+    "Mass",
+    "Pneumothorax"
+  ],
+  "no_finding_frac": 0.3,
+  "no_finding_seed": 444,
+  "lp_epochs": 10,
+  "ft_epochs": 37,
+  "patience": 5,
+  "batch_size": 32,
+  "accum_steps": 1,
+  "lr_lp": 0.001,
+  "lr_ft_head": 0.0002,
+  "lr_ft_backbone": 3e-05,
+  "weight_decay": 0.05,
+  "ema_decay": 0.9995,
+  "img_size": 384,
+  "sampler": "fisher_geometric_mean_1x",
+  "scheduler_ft": "CosineAnnealingLR(T_max=37, eta_min=1e-06)",
+  "tta_scales": [
+    320,
+    384,
+    512
+  ],
+  "logit_adjustment_tau_default": 0.7,
+  "logit_adjustment_tau_sweep": [
+    0.0,
+    0.3,
+    0.5,
+    0.7,
+    1.0
+  ],
+  "channels_last": true,
+  "fused_adamw": true,
+  "amp": "fp16",
+  "n_folds": 1,
+  "fold_results": {
+    "0": {
+      "auroc": 0.8064489278342916,
+      "f1_opt": 0.49793670989290484,
+      "f1_05": 0.4794729316522672,
+      "thresholds": [
+        0.4800000000000001,
+        0.5400000000000001,
+        0.5800000000000002,
+        0.6300000000000001,
+        0.6600000000000001,
+        0.6900000000000002
+      ],
+      "tau": 0.5,
+      "tau_results": [
+        [
+          0.0,
+          0.4976633337947161
+        ],
+        [
+          0.3,
+          0.49780803551529346
+        ],
+        [
+          0.5,
+          0.49793670989290484
+        ],
+        [
+          0.7,
+          0.49764088512912313
+        ],
+        [
+          1.0,
+          0.4974134671076696
+        ]
+      ],
+      "phase_best": "FT",
+      "best_epoch": 13
+    }
+  },
+  "total_time_hours": 2.7419502570231757
+}

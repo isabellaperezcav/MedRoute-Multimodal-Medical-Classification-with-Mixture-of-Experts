@@ -1,0 +1,17 @@
+numpy 
+scikit-learn 
+faiss-cpu 
+torch 
+matplotlib 
+seaborn
+kagglehub
+torchvision 
+timm
+pandas 
+pillow 
+tqdm
+kaggle
+albumentations
+faiss-cpu
+streamlit>=1.35.0
+plotly>=5.20.0

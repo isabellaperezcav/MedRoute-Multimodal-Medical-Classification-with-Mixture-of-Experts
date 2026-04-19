@@ -1,0 +1,23 @@
+# ── Core ─────────────────────────────────────────────────────────────────────
+torch>=2.0.0
+torchvision>=0.15.0
+
+# ── Vision Transformer backbone ───────────────────────────────────────────────
+timm>=0.9.0
+
+# ── Router k-NN ───────────────────────────────────────────────────────────────
+faiss-cpu>=1.7.4          # CPU por defecto
+# faiss-gpu>=1.7.4        # Descomentar para GPU FAISS (requiere CUDA toolkit)
+
+# ── Carga de imágenes 2D ──────────────────────────────────────────────────────
+Pillow>=9.0.0
+
+# ── Carga de volúmenes NIfTI 3D ───────────────────────────────────────────────
+nibabel>=4.0.0
+
+# ── Utilidades numéricas ─────────────────────────────────────────────────────
+numpy>=1.23.0
+
+# ── Opcionales (logging, análisis) ───────────────────────────────────────────
+# matplotlib>=3.7.0       # Para visualización de slices
+# pandas>=1.5.0           # Para análisis de resultados en batch

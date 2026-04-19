@@ -1,0 +1,111 @@
+# =========================
+# 🔹 SISTEMA OPERATIVO
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# 🔹 PYTHON
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+venv/
+env/
+.venv/
+ENV/
+
+# Distribución / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Logs
+*.log
+
+# =========================
+# 🔹 JUPYTER / NOTEBOOKS
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# 🔹 DATA / DATASETS
+# =========================
+datasets/
+data/
+*.csv
+*.zip
+*.7z
+*.tar
+*.gz
+*.npy
+
+# (opcional: comenta si quieres versionar data)
+# !data/important_file.csv
+
+# =========================
+# 🔹 MODELOS ML / IA
+# =========================
+*.h5
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.pb
+
+# =========================
+# 🔹 CONFIG / SECRETOS
+# =========================
+.env
+.env.*
+*.env
+
+# claves AWS, GCP, etc.
+*.pem
+*.key
+credentials.json
+
+# =========================
+# 🔹 DOCKER
+# =========================
+docker-compose.override.yml
+
+# Kaggle credentials
+.kaggle/
+kaggle.json
+
+# =========================
+# 🔹 IDEs / EDITORES
+# =========================
+
+# VS Code
+.vscode/
+
+# PyCharm / IntelliJ
+.idea/
+
+# =========================
+# 🔹 NODE (si usas frontend)
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================
+# 🔹 AIRFLOW
+# =========================
+airflow.db
+logs/
+untracked/
+
+# =========================
+# 🔹 CACHE / TEMPORALES
+# =========================
+*.tmp
+*.temp
+.cache/

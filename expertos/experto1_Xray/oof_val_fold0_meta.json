@@ -1,0 +1,35 @@
+{
+  "fold": 0,
+  "tau_logit_adj": 0.7,
+  "multiscale_tta": true,
+  "tta_scales_used": [
+    320,
+    384,
+    512
+  ],
+  "hflip": true,
+  "prevalence_train": [
+    0.2829448170271494,
+    0.1912104026049641,
+    0.16628210381040692,
+    0.09095810061889462,
+    0.08580423953593685,
+    0.07870959394475234
+  ],
+  "patologias": [
+    "Infiltration",
+    "Effusion",
+    "Atelectasis",
+    "Nodule",
+    "Mass",
+    "Pneumothorax"
+  ],
+  "n_samples": 23494,
+  "model": "convnextv2_base.fcmae_ft_in22k_in1k_384",
+  "exp_prefix": "exp1v21",
+  "checkpoint_source": "exp1v21/ckpt_exp1v21_f0_best.pt",
+  "checkpoint_best_metric": 0.4891021610165602,
+  "checkpoint_best_epoch": 13,
+  "checkpoint_best_phase": "FT",
+  "export_timestamp": "2026-04-18T17:58:13Z"
+}

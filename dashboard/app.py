@@ -52,7 +52,6 @@ except ImportError as _e:
 # ─── Configuración de página ──────────────────────────────────────────────────
 st.set_page_config(
     page_title="MoE Medical Dashboard",
-    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -166,7 +165,7 @@ for key, default in [
 #  CARGA DE MODELO (cached — se ejecuta UNA vez por sesión)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@st.cache_resource(show_spinner="🔧 Cargando sistema MoE (primera vez puede tardar ~30 s)...")
+@st.cache_resource(show_spinner="Cargando sistema MoE (primera vez puede tardar ~30 s)...")
 def load_moe_model():
     """
     Carga el MoEModel completo: backbone + router FAISS + 5 expertos.
@@ -261,7 +260,7 @@ def real_inference(img_pil: Image.Image, is_nifti_input: bool, nifti_volume=None
 
     except Exception as exc:
         # Si la inferencia falla (ej: checkpoint con llave distinta), usar demo
-        st.warning(f"⚠️ Inferencia real falló: `{exc}`. Mostrando demo.")
+        st.warning(f"Inferencia real falló: `{exc}`. Mostrando demo.")
         return _demo_inference(img_pil, str(exc))
 
 
@@ -471,10 +470,15 @@ def detect_ood(result: dict, entropy_thr: float, cos_thr: float) -> dict:
 
     return {
         "is_ood":  len(reasons) > 0,
-        "reasons": " y ".join(reasons) if reasons else "",
+        "reasons":" y ".join(reasons) if reasons else "",
         "max_cos": max_cos,
         "entropy": entropy,
     }
+
+
+def fmt_es(value: float, decimals: int = 3) -> str:
+    """Formatea un float con coma decimal estilo español."""
+    return f"{value:.{decimals}f}".replace(".",",")
 
 
 def update_load_balance(expert_idx):
@@ -809,7 +813,7 @@ def load_ablation_data() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="main-header">
-  <h1>🧬 MoE Medical Imaging Dashboard</h1>
+  <h1>MoE Medical Imaging Dashboard</h1>
   <p>Clasificación Médica con Mixture of Experts + Ablation Study del Router &nbsp;|&nbsp;
      Incorporar Elementos de IA — Unidad II (Bloque Visión)</p>
 </div>
@@ -819,15 +823,15 @@ st.markdown("""
 if MOE_AVAILABLE:
     _model_check, _err = load_moe_model()
     if _model_check is not None:
-        st.markdown('<div class="mode-banner-real">✅ <strong>Modo REAL</strong> — '
+        st.markdown('<div class="mode-banner-real"><strong>Modo REAL</strong> — '
                     'Pipeline MoE conectado (backbone ViT + router kNN FAISS + expertos)</div>',
                     unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="mode-banner">⚠️ <strong>Modo DEMO</strong> — '
+        st.markdown(f'<div class="mode-banner"><strong>Modo DEMO</strong> — '
                     f'MoE importado pero modelo no cargó: <code>{_err[:120]}</code></div>',
                     unsafe_allow_html=True)
 else:
-    st.markdown('<div class="mode-banner">🔶 <strong>Modo DEMO</strong> — '
+    st.markdown('<div class="mode-banner"><strong>Modo DEMO</strong> — '
                 'Módulo MOE no encontrado. Verifica <code>sys.path</code> y checkpoints.</div>',
                 unsafe_allow_html=True)
 
@@ -835,7 +839,7 @@ else:
 #  SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown("### ⚙️ Configuración")
+    st.markdown("### Configuración")
 
     router_choice = st.selectbox(
         "Router activo",
@@ -850,7 +854,7 @@ with st.sidebar:
     show_balance  = st.checkbox("Mostrar panel Load Balance",   value=True)
 
     st.divider()
-    st.markdown("**📌 Umbrales**")
+    st.markdown("**Umbrales**")
     ood_threshold = st.slider(
         "Umbral entropía OOD", 0.5, 3.0, float(OOD_THRESHOLD), 0.05,
         help="Entropía del gating kNN. Alta entropía = votos dispersos entre expertos.",
@@ -871,7 +875,7 @@ with st.sidebar:
                                help="Penalización al superar este cociente.")
 
     st.divider()
-    if st.button("🔄 Reiniciar contadores de carga"):
+    if st.button("Reiniciar contadores de carga"):
         st.session_state.f_i_history   = np.zeros(5, dtype=np.float64)
         st.session_state.n_inferences  = 0
         st.session_state.last_result   = None
@@ -882,14 +886,13 @@ with st.sidebar:
     st.caption(f"Total inferencias: **{st.session_state.n_inferences}**")
     ratio, n_active = compute_load_ratio()
     if ratio is None:
-        st.caption(f"Cociente max/min f_i: ⚪ **—** (sin inferencias, límite {balance_limit:.2f})")
+        st.caption(f"Cociente max/min f_i: **—** (sin inferencias, límite {fmt_es(balance_limit, 2)})")
     elif n_active < 5:
-        st.caption(f"Cociente max/min f_i ({n_active}/5 activos): 🟡 **{ratio:.2f}** (límite {balance_limit:.2f})")
+        st.caption(f"Cociente max/min f_i ({n_active}/5 activos): **{fmt_es(ratio, 3)}** (límite {fmt_es(balance_limit, 2)})")
     else:
-        color  = "🔴" if ratio > balance_limit else "🟢"
-        st.caption(f"Cociente max/min f_i: {color} **{ratio:.2f}** (límite {balance_limit:.2f})")
+        st.caption(f"Cociente max/min f_i: **{fmt_es(ratio, 3)}** (límite {fmt_es(balance_limit, 2)})")
 
-    with st.expander("🔍 Debug Load Balance", expanded=False):
+    with st.expander("Debug Load Balance", expanded=False):
         fi_dbg = np.asarray(st.session_state.f_i_history, dtype=np.float64)
         st.code(
             "n_inferences = {n}\n"
@@ -898,7 +901,7 @@ with st.sidebar:
             "n_active     = {na} (expertos con f_i > 0)\n"
             "ratio        = {r}\n".format(
                 n  = st.session_state.n_inferences,
-                fi = ", ".join(f"{v:.6f}" for v in fi_dbg),
+                fi =", ".join(f"{v:.6f}" for v in fi_dbg),
                 s  = float(fi_dbg.sum()),
                 na = int((fi_dbg > 0).sum()),
                 r  = f"{ratio:.6f}" if ratio is not None else "None",
@@ -908,9 +911,9 @@ with st.sidebar:
 
     if MOE_AVAILABLE and torch.cuda.is_available():
         st.divider()
-        st.caption(f"🖥️ GPU: `{torch.cuda.get_device_name(0)}`")
+        st.caption(f"GPU: `{torch.cuda.get_device_name(0)}`")
     elif MOE_AVAILABLE:
-        st.caption("🖥️ Dispositivo: CPU")
+        st.caption("Dispositivo: CPU")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  COLUMNAS PRINCIPALES
@@ -921,7 +924,7 @@ col_left, col_right = st.columns([1, 1.6], gap="large")
 # COLUMNA IZQUIERDA — Carga + Preprocesado
 # ────────────────────────────────────────────────
 with col_left:
-    st.markdown('<div class="section-title">📁 1. Carga de Imagen</div>',
+    st.markdown('<div class="section-title">1. Carga de Imagen</div>',
                 unsafe_allow_html=True)
 
     uploaded_files = st.file_uploader(
@@ -952,7 +955,7 @@ with col_left:
     selected_idx   = 0
 
     if not uploaded_files:
-        st.info("⬆️ Sube una o varias imágenes médicas para comenzar. Soporta PNG, JPEG, NIfTI (.nii) y NumPy (.npy).")
+        st.info("Sube una o varias imágenes médicas para comenzar. Soporta PNG, JPEG, NIfTI (.nii) y NumPy (.npy).")
         # Imagen demo
         demo_arr = np.random.randint(60, 200, (224, 224, 3), dtype=np.uint8)
         demo_arr[80:140, 80:140] = [200, 220, 240]
@@ -969,7 +972,7 @@ with col_left:
         # La inferencia se ejecuta igual sobre TODOS los archivos del batch.
         if n_files > 1:
             st.markdown(
-                f'<span class="badge badge-blue">📦 Batch · {n_files} archivos cargados</span>',
+                f'<span class="badge badge-blue">Batch · {n_files} archivos cargados</span>',
                 unsafe_allow_html=True,
             )
             selected_idx = st.selectbox(
@@ -992,7 +995,7 @@ with col_left:
         med = load_medical_input(uploaded_file)
 
         if med["error"]:
-            st.error(f"❌ Error al cargar el archivo: {med['error']}")
+            st.error(f"Error al cargar el archivo: {med['error']}")
 
         # ── Mapear campos del resultado a las variables existentes ─────────
         modality_label = med["modality"]
@@ -1010,7 +1013,7 @@ with col_left:
             # Badge de formato
             fmt_label = "NIfTI" if file_type == "nifti" else "NumPy .npy"
             st.markdown(
-                f'<span class="badge badge-blue">🗂️ {fmt_label} · 3D · '
+                f'<span class="badge badge-blue">{fmt_label} · 3D · '
                 f'{volume.shape[0]}×{volume.shape[1]}×{volume.shape[2]} voxels</span>',
                 unsafe_allow_html=True,
             )
@@ -1052,12 +1055,12 @@ with col_left:
             )
 
             # Mini-estadísticas del volumen
-            with st.expander("📊 Estadísticas del volumen"):
+            with st.expander("Estadísticas del volumen"):
                 st.caption(
-                    f"**Shape:** {volume.shape}  ·  "
-                    f"**Min:** {volume.min():.1f}  ·  "
-                    f"**Max:** {volume.max():.1f}  ·  "
-                    f"**Media:** {volume.mean():.1f}  ·  "
+                    f"**Shape:** {volume.shape}  · "
+                    f"**Min:** {volume.min():.1f}  · "
+                    f"**Max:** {volume.max():.1f}  · "
+                    f"**Media:** {volume.mean():.1f}  · "
                     f"**Std:** {volume.std():.1f}"
                 )
 
@@ -1070,7 +1073,7 @@ with col_left:
             )
 
     # ── 2. Preprocesado Transparente ─────────────────────────────────────────
-    st.markdown('<div class="section-title">🔧 2. Preprocesado Transparente</div>',
+    st.markdown('<div class="section-title">2. Preprocesado Transparente</div>',
                 unsafe_allow_html=True)
 
     if not using_demo and img_pil is not None:
@@ -1142,8 +1145,8 @@ dtype     : float32
     # ── Botón de inferencia ───────────────────────────────────────────────────
     st.divider()
     n_batch = 0 if using_demo or not uploaded_files else len(uploaded_files)
-    btn_label = ("🚀 Ejecutar Inferencia" if n_batch <= 1
-                 else f"🚀 Ejecutar Inferencia sobre {n_batch} imágenes")
+    btn_label = ("Ejecutar Inferencia" if n_batch <= 1
+                 else f"Ejecutar Inferencia sobre {n_batch} imágenes")
     btn_help  = ("Sube una imagen primero" if using_demo
                  else (f"Pipeline MoE sobre {n_batch} archivo(s)" if n_batch else
                        "Ejecutar pipeline MoE"))
@@ -1171,11 +1174,11 @@ with col_right:
             n     = len(batch)
             batch_results_local = []
 
-            progress = st.progress(0.0, text=f"⏳ Procesando {n} imagen(es)…")
+            progress = st.progress(0.0, text=f"Procesando {n} imagen(es)…")
 
             for i, upl in enumerate(batch):
                 progress.progress(i / max(n, 1),
-                                  text=f"⏳ [{i+1}/{n}] {upl.name}")
+                                  text=f"[{i+1}/{n}] {upl.name}")
                 try:
                     upl.seek(0)   # rebobinar stream por si ya fue leído
                 except Exception:
@@ -1215,7 +1218,7 @@ with col_right:
                 }
                 batch_results_local.append(entry)
 
-            progress.progress(1.0, text=f"✅ Batch completado ({n} imagen(es))")
+            progress.progress(1.0, text=f"Batch completado ({n} imagen(es))")
             time.sleep(0.2)
             progress.empty()
 
@@ -1244,17 +1247,17 @@ with col_right:
             result = st.session_state.last_result
 
         if result is None:
-            st.info("👈 Sube una o más imágenes y presiona **Ejecutar Inferencia**.")
+            st.info("Sube una o más imágenes y presiona **Ejecutar Inferencia**.")
             st.stop()
 
         # Badge de modo
         mode = result.get("mode", "demo")
         if mode == "real":
-            st.markdown('<span class="badge badge-green">🟢 Inferencia REAL</span>',
+            st.markdown('<span class="badge badge-green">Inferencia REAL</span>',
                         unsafe_allow_html=True)
         else:
             reason = result.get("demo_reason", "")
-            st.markdown(f'<span class="badge badge-orange">🟡 Modo DEMO</span> '
+            st.markdown(f'<span class="badge badge-orange">Modo DEMO</span>'
                         f'<small style="color:#856404">{reason[:80]}</small>',
                         unsafe_allow_html=True)
 
@@ -1267,7 +1270,7 @@ with col_right:
         if ood_now["is_ood"]:
             st.markdown(f"""
             <div class="ood-alert" style="border-color:#dc3545; background:#f8d7da;">
-            🚫 <strong>IMAGEN FUERA DE DISTRIBUCIÓN (OOD)</strong><br>
+            <strong>IMAGEN FUERA DE DISTRIBUCIÓN (OOD)</strong><br>
             <small>Motivo: {ood_now["reasons"]}.</small><br>
             <small>Coseno al vecino más cercano: <code>{ood_now["max_cos"]:.3f}</code>
             · Entropía H(g): <code>{ood_now["entropy"]:.3f}</code>.</small><br>
@@ -1285,7 +1288,7 @@ with col_right:
         # que el usuario vea POR QUÉ fue rechazada.
         if ood_blocked:
             st.info(
-                "ℹ️ Las secciones de predicción del experto están suprimidas "
+                "Las secciones de predicción del experto están suprimidas "
                 "porque la imagen se rechazó. Puedes desactivar el bloqueo en "
                 "la barra lateral si quieres forzar la inferencia del experto."
             )
@@ -1294,7 +1297,7 @@ with col_right:
         # Suprimida cuando la imagen se rechazó por OOD: no tiene sentido
         # mostrar la predicción de un experto que nunca procesó la imagen.
         if not ood_blocked:
-            st.markdown('<div class="section-title">⚡ 3. Inferencia en Tiempo Real</div>',
+            st.markdown('<div class="section-title">3. Inferencia en Tiempo Real</div>',
                         unsafe_allow_html=True)
 
             c1, c2, c3 = st.columns(3)
@@ -1335,7 +1338,7 @@ with col_right:
                 st.plotly_chart(fig_pb, use_container_width=True)
 
         # ── 4. Attention Heatmap ──────────────────────────────────────────
-        st.markdown('<div class="section-title">🔥 4. Attention Heatmap — Router ViT</div>',
+        st.markdown('<div class="section-title">4. Attention Heatmap — Router ViT</div>',
                     unsafe_allow_html=True)
 
         overlay = overlay_heatmap(img_pil, result["attn_map"])
@@ -1361,7 +1364,7 @@ with col_right:
 
         # Info del método de heatmap
         if mode == "real":
-            st.caption("_Heatmap generado desde attention rollout del último bloque ViT "
+            st.caption("_Heatmap generado desde attention rollout del último bloque ViT"
                        "(CLS token → patches, promedio de heads)._")
         else:
             st.caption("_Heatmap simulado (demo). Conecta los checkpoints para ver la atención real._")
@@ -1373,7 +1376,7 @@ with col_right:
         # la imagen fue rechazada (vecinos lejanos, coseno bajo).
         router_info = result.get("router_info", {})
         if not ood_blocked:
-            st.markdown('<div class="section-title">🤖 5. Experto Activado</div>',
+            st.markdown('<div class="section-title">5. Experto Activado</div>',
                         unsafe_allow_html=True)
 
             gating_scores = result["gating"]
@@ -1381,11 +1384,11 @@ with col_right:
 
             st.markdown(f"""
             <div class="expert-card">
-              <h4>🏆 {exp_info['name']}</h4>
-              <p>🏗️ <strong>Arquitectura:</strong> {exp_info['arch']}</p>
-              <p>📊 <strong>Dataset origen:</strong> {exp_info['dataset']}</p>
-              <p>🎯 <strong>Tarea:</strong> {exp_info['task']}</p>
-              <p>📈 <strong>Gating score:</strong>
+              <h4>{exp_info['name']}</h4>
+              <p><strong>Arquitectura:</strong> {exp_info['arch']}</p>
+              <p><strong>Dataset origen:</strong> {exp_info['dataset']}</p>
+              <p><strong>Tarea:</strong> {exp_info['task']}</p>
+              <p><strong>Gating score:</strong>
                  <code>{gating_scores[result['expert_idx']]:.4f}</code>
                  &nbsp;|&nbsp;
                  <strong>Router conf.:</strong> <code>{float(confidence_r):.2%}</code>
@@ -1422,8 +1425,7 @@ with col_right:
                     nbr_scores = router_info.get("cosine_scores",   [])
                     for j, (lbl, sc) in enumerate(zip(nbr_labels, nbr_scores)):
                         expert_name = EXPERTS_UI.get(int(lbl), {}).get("name", f"Exp{lbl}")
-                        low_cos = " ⚠️" if sc < ood_cos_threshold else ""
-                        st.caption(f"  {j+1}. {expert_name} — cos={sc:.4f}{low_cos}")
+                        st.caption(f"  {j+1}. {expert_name} — cos={sc:.4f}")
                 with cols_r[1]:
                     st.markdown("**Votos por experto:**")
                     votes = router_info.get("vote_counts", {})
@@ -1434,7 +1436,7 @@ with col_right:
         batch_results = st.session_state.batch_results
         if len(batch_results) > 1:
             st.markdown(
-                '<div class="section-title">📦 Resumen del Batch</div>',
+                '<div class="section-title">Resumen del Batch</div>',
                 unsafe_allow_html=True,
             )
 
@@ -1443,7 +1445,7 @@ with col_right:
                     "#":           i + 1,
                     "Archivo":     entry["filename"],
                     "Modalidad":   entry["modality"],
-                    "OOD":         "🚫 Rechazada" if entry.get("is_ood") else "✅ OK",
+                    "OOD":         "Rechazada" if entry.get("is_ood") else "OK",
                     "Experto":     ("— (bloqueado)" if entry.get("is_ood") and block_ood_inference
                                      else EXPERTS_UI[entry["expert_idx"]]["name"]),
                     "Predicción":  ("—" if entry.get("is_ood") and block_ood_inference
@@ -1521,7 +1523,7 @@ with col_right:
             # Descarga CSV del resumen
             csv_bytes = df_batch.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "⬇️ Descargar resumen del batch (CSV)",
+                "Descargar resumen del batch (CSV)",
                 data=csv_bytes,
                 file_name="batch_results.csv",
                 mime="text/csv",
@@ -1529,7 +1531,7 @@ with col_right:
             )
 
     else:
-        st.info("👈 Sube una o varias imágenes y presiona **Ejecutar Inferencia** para ver los resultados.")
+        st.info("Sube una o varias imágenes y presiona **Ejecutar Inferencia** para ver los resultados.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SECCIÓN INFERIOR — Ablation, Load Balance, OOD
@@ -1537,9 +1539,9 @@ with col_right:
 st.divider()
 
 tabs_lower = []
-if show_ablation: tabs_lower.append("📋 6. Ablation Study")
-if show_balance:  tabs_lower.append("⚖️ 7. Load Balance")
-if show_ood:      tabs_lower.append("🚨 8. OOD Detection")
+if show_ablation: tabs_lower.append("6. Ablation Study")
+if show_balance:  tabs_lower.append("7. Load Balance")
+if show_ood:      tabs_lower.append("8. OOD Detection")
 
 if tabs_lower:
     tabs    = st.tabs(tabs_lower)
@@ -1552,7 +1554,7 @@ if tabs_lower:
 
             abl = load_ablation_data()
             src = abl.pop("_source", "hardcoded")
-            src_badge = "🟢 desde JSON" if src == "json" else "🟡 datos integrados"
+            src_badge = "desde JSON" if src == "json" else "datos integrados"
             st.caption(f"Fuente de datos: **{src_badge}** — {ABLATION_JSON}")
 
             df_abl = pd.DataFrame(abl)
@@ -1620,7 +1622,7 @@ if tabs_lower:
                 st.plotly_chart(fig_scat, use_container_width=True)
 
             st.success(
-                f"🏆 **Router ganador:** `{winner_router}` con "
+                f"**Router ganador:** `{winner_router}` con "
                 f"**{abl['Routing Acc.'][winner_idx]:.0%}** Routing Accuracy."
             )
         tab_idx += 1
@@ -1648,7 +1650,7 @@ if tabs_lower:
                                  annotation_text="Balance perfecto (20%)")
                 fig_lb.add_hline(y=20 * balance_limit, line_dash="dash",
                                  line_color="red",
-                                 annotation_text=f"Límite ({balance_limit:.2f}×)")
+                                 annotation_text=f"Límite ({fmt_es(balance_limit, 2)}×)")
                 fig_lb.update_layout(
                     title=f"f_i acumulado — {n_inf} inferencia(s)",
                     yaxis=dict(range=[0, 65], title="f_i (%)"),
@@ -1666,33 +1668,32 @@ if tabs_lower:
                 st.divider()
                 if ratio is None:
                     st.metric("Cociente max/min", "—",
-                              delta=f"Límite: {balance_limit:.2f}")
+                              delta=f"Límite: {fmt_es(balance_limit, 2)}")
                     st.info(
-                        "⚪ Aún no hay inferencias. Carga al menos una imagen "
+                        "Aún no hay inferencias. Carga al menos una imagen "
                         "para comenzar a medir el balance de carga."
                     )
                 elif n_active < 5:
                     missing = 5 - n_active
                     st.metric(
                         f"Cociente max/min ({n_active}/5 activos)",
-                        f"{ratio:.3f}",
-                        delta=f"Límite: {balance_limit:.2f}",
+                        fmt_es(ratio, 3),
+                        delta=f"Límite: {fmt_es(balance_limit, 2)}",
                     )
                     st.warning(
-                        f"🟡 **Cobertura parcial** — el cociente se calcula sobre "
+                        f"**Cobertura parcial** — el cociente se calcula sobre "
                         f"los **{n_active}** experto(s) que han recibido "
                         f"inferencias. Faltan **{missing}** por activar para "
                         f"evaluar el balance completo sobre los 5 dominios."
                     )
                 else:
-                    status_icon = "🔴" if ratio > balance_limit else "🟢"
-                    st.metric("Cociente max/min", f"{ratio:.3f}",
-                              delta=f"Límite: {balance_limit:.2f}")
+                    st.metric("Cociente max/min", fmt_es(ratio, 3),
+                              delta=f"Límite: {fmt_es(balance_limit, 2)}")
                     if ratio > balance_limit:
-                        st.error(f"{status_icon} **PENALIZACIÓN ACTIVA** — cociente "
-                                 f"{ratio:.2f} > {balance_limit:.2f}\n\nAjusta α en Auxiliary Loss.")
+                        st.error(f"**PENALIZACIÓN ACTIVA** — cociente "
+                                 f"{fmt_es(ratio, 3)} > {fmt_es(balance_limit, 2)}\n\nAjusta α en Auxiliary Loss.")
                     else:
-                        st.success(f"{status_icon} Balance dentro del límite permitido.")
+                        st.success("Balance dentro del límite permitido.")
                 st.caption("_La penalización aplica solo al router ViT+Linear y requiere los 5 expertos activos._")
         tab_idx += 1
 
@@ -1717,7 +1718,7 @@ if tabs_lower:
                     if is_ood:
                         st.markdown(f"""
                         <div class="ood-alert">
-                        ⚠️ <strong>POSIBLE OOD DETECTADO</strong><br>
+                        <strong>POSIBLE OOD DETECTADO</strong><br>
                         Entropía H(g) = <strong>{entropy:.4f}</strong>
                         (umbral: {ood_threshold:.2f})<br>
                         Esta imagen podría no pertenecer a ningún dominio conocido.
@@ -1725,7 +1726,7 @@ if tabs_lower:
                     else:
                         st.markdown(f"""
                         <div class="ood-ok">
-                        ✅ <strong>Imagen IN-DISTRIBUTION</strong><br>
+                        <strong>Imagen IN-DISTRIBUTION</strong><br>
                         Entropía H(g) = <strong>{entropy:.4f}</strong>
                         (umbral: {ood_threshold:.2f})<br>
                         El router reconoce la imagen con buena confianza.
@@ -1736,7 +1737,7 @@ if tabs_lower:
                         value=entropy,
                         delta={"reference": ood_threshold,
                                "increasing": {"color": "#dc3545"}},
-                        number={"suffix": " nats", "font": {"size": 22}},
+                        number={"suffix":" nats", "font": {"size": 22}},
                         gauge={
                             "axis": {"range": [0, max_ent]},
                             "bar":  {"color": "#dc3545" if is_ood else "#28a745"},
@@ -1792,10 +1793,10 @@ if tabs_lower:
 
 # ─── Footer ───────────────────────────────────────────────────────────────────
 st.divider()
-mode_str = "Pipeline MoE real conectado ✅" if (MOE_AVAILABLE and load_moe_model()[0] is not None) \
+mode_str = "Pipeline MoE real conectado" if (MOE_AVAILABLE and load_moe_model()[0] is not None) \
            else "Modo demo — conecta los checkpoints"
 st.markdown(
-    f"<center><small>🧬 <b>MoE Medical Dashboard</b> — Proyecto Final Visión · "
+    f"<center><small><b>MoE Medical Dashboard</b> — Proyecto Final Visión · "
     f"Incorporar Elementos de IA, Unidad II · <code>{mode_str}</code></small></center>",
     unsafe_allow_html=True,
 )

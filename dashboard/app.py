@@ -156,6 +156,8 @@ for key, default in [
     ("f_i_history",  np.zeros(5, dtype=np.float64)),
     ("n_inferences", 0),
     ("last_result",  None),
+    ("batch_results", []),    # lista de dicts por imagen procesada en batch
+    ("batch_files_sig", None), # firma del batch actual para detectar cambios
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -816,9 +818,10 @@ with st.sidebar:
 
     st.divider()
     if st.button("🔄 Reiniciar contadores de carga"):
-        st.session_state.f_i_history  = np.zeros(5, dtype=np.float64)
-        st.session_state.n_inferences = 0
-        st.session_state.last_result  = None
+        st.session_state.f_i_history   = np.zeros(5, dtype=np.float64)
+        st.session_state.n_inferences  = 0
+        st.session_state.last_result   = None
+        st.session_state.batch_results = []
         st.success("Contadores reiniciados")
 
     st.divider()
@@ -867,23 +870,35 @@ with col_left:
     st.markdown('<div class="section-title">📁 1. Carga de Imagen</div>',
                 unsafe_allow_html=True)
 
-    uploaded_file = st.file_uploader(
-        "Sube una imagen médica (PNG, JPEG, NIfTI, NumPy)",
+    uploaded_files = st.file_uploader(
+        "Sube una o varias imágenes médicas (PNG, JPEG, NIfTI, NumPy)",
         type=["png", "jpg", "jpeg", "nii", "npy"],
+        accept_multiple_files=True,
         label_visibility="collapsed",
-        help="Formatos: imágenes 2D (PNG/JPG) · volúmenes NIfTI (.nii) · arrays NumPy 3D (.npy)",
+        help=("Puedes subir múltiples archivos para inferencia en lote. "
+              "Formatos: imágenes 2D (PNG/JPG) · volúmenes NIfTI (.nii) · arrays NumPy 3D (.npy)"),
     )
 
-    # Variables de estado de la imagen actual
+    # Firma del batch actual para detectar cambios en el uploader entre reruns
+    current_sig = tuple((f.name, getattr(f, "size", None)) for f in (uploaded_files or []))
+    if current_sig != st.session_state.get("batch_files_sig"):
+        st.session_state.batch_files_sig = current_sig
+        # Si el set de archivos cambió, descartamos los resultados del batch anterior
+        # para no confundir al usuario con predicciones de una lista distinta.
+        st.session_state.batch_results = []
+
+    # Variables de estado de la imagen actual (la seleccionada para inspección)
     img_pil        = None
     orig_size      = None
     modality_label = None
     is_nifti_input = False
     nifti_volume   = None
     using_demo     = False
+    uploaded_file  = None          # archivo actualmente seleccionado para preview
+    selected_idx   = 0
 
-    if uploaded_file is None:
-        st.info("⬆️ Sube una imagen médica para comenzar. Soporta PNG, JPEG, NIfTI (.nii) y NumPy (.npy).")
+    if not uploaded_files:
+        st.info("⬆️ Sube una o varias imágenes médicas para comenzar. Soporta PNG, JPEG, NIfTI (.nii) y NumPy (.npy).")
         # Imagen demo
         demo_arr = np.random.randint(60, 200, (224, 224, 3), dtype=np.uint8)
         demo_arr[80:140, 80:140] = [200, 220, 240]
@@ -894,6 +909,26 @@ with col_left:
         st.caption("_Vista previa con imagen de demostración_")
     else:
         using_demo = False
+        n_files = len(uploaded_files)
+
+        # Selector de archivo para previsualización e inspección detallada.
+        # La inferencia se ejecuta igual sobre TODOS los archivos del batch.
+        if n_files > 1:
+            st.markdown(
+                f'<span class="badge badge-blue">📦 Batch · {n_files} archivos cargados</span>',
+                unsafe_allow_html=True,
+            )
+            selected_idx = st.selectbox(
+                "Imagen a inspeccionar en detalle",
+                options=list(range(n_files)),
+                format_func=lambda i: f"{i+1}. {uploaded_files[i].name}",
+                key="batch_preview_idx",
+                help="La inferencia se ejecuta sobre el batch completo; aquí eliges cuál ver en detalle.",
+            )
+        else:
+            selected_idx = 0
+
+        uploaded_file = uploaded_files[selected_idx]
 
         # ── Detección y carga via load_medical_input (nueva función) ─────
         #   Llama al wrapper nuevo. Toda la lógica de detección está allí.
@@ -1052,12 +1087,18 @@ dtype     : float32
 
     # ── Botón de inferencia ───────────────────────────────────────────────────
     st.divider()
+    n_batch = 0 if using_demo or not uploaded_files else len(uploaded_files)
+    btn_label = ("🚀 Ejecutar Inferencia" if n_batch <= 1
+                 else f"🚀 Ejecutar Inferencia sobre {n_batch} imágenes")
+    btn_help  = ("Sube una imagen primero" if using_demo
+                 else (f"Pipeline MoE sobre {n_batch} archivo(s)" if n_batch else
+                       "Ejecutar pipeline MoE"))
     run_inference = st.button(
-        "🚀 Ejecutar Inferencia",
+        btn_label,
         type="primary",
         use_container_width=True,
         disabled=using_demo,
-        help="Sube una imagen primero" if using_demo else "Ejecutar pipeline MoE",
+        help=btn_help,
     )
 
 # ────────────────────────────────────────────────
@@ -1072,21 +1113,74 @@ with col_right:
 
         # ── Ejecutar inferencia nueva ─────────────────────────────────────
         if run_inference and not using_demo:
-            with st.spinner("⏳ Ejecutando pipeline MoE..."):
-                result = real_inference(img_pil, is_nifti_input, nifti_volume)
-            st.session_state.last_result = result
-            update_load_balance(result["expert_idx"])
+            batch = uploaded_files or []
+            n     = len(batch)
+            batch_results_local = []
+
+            progress = st.progress(0.0, text=f"⏳ Procesando {n} imagen(es)…")
+
+            for i, upl in enumerate(batch):
+                progress.progress(i / max(n, 1),
+                                  text=f"⏳ [{i+1}/{n}] {upl.name}")
+                try:
+                    upl.seek(0)   # rebobinar stream por si ya fue leído
+                except Exception:
+                    pass
+
+                med_i = load_medical_input(upl)
+                res_i = real_inference(
+                    med_i["preview_pil"],
+                    med_i["is_volumetric"],
+                    med_i["volume"],
+                )
+                # Registrar en balance de carga y acumular
+                update_load_balance(res_i["expert_idx"])
+                entry = {
+                    "filename":    upl.name,
+                    "modality":    med_i["modality"],
+                    "expert_idx":  res_i["expert_idx"],
+                    "pred_label":  res_i["pred_label"],
+                    "confidence":  res_i["confidence"],
+                    "entropy":     res_i["entropy"],
+                    "latency_ms":  res_i["latency_ms"],
+                    "mode":        res_i.get("mode", "demo"),
+                    "result":      res_i,
+                    "preview_pil": med_i["preview_pil"],
+                    "is_nifti":    med_i["is_volumetric"],
+                    "volume":      med_i["volume"],
+                }
+                batch_results_local.append(entry)
+
+            progress.progress(1.0, text=f"✅ Batch completado ({n} imagen(es))")
+            time.sleep(0.2)
+            progress.empty()
+
+            # Guardar en session_state: batch completo + último resultado
+            st.session_state.batch_results = batch_results_local
+            # last_result apunta al resultado del archivo actualmente seleccionado
+            # en el selectbox para preservar la UX individual existente.
+            sel = selected_idx if selected_idx < len(batch_results_local) else 0
+            st.session_state.last_result = batch_results_local[sel]["result"]
+
             # Rerun completo para que el sidebar (Debug Load Balance y
-            # caption de ratio) lea el session_state actualizado. Sin esto,
-            # esos widgets quedan atrapados en el estado previo a la
-            # inferencia porque Streamlit ejecuta el script top-to-bottom
-            # y la sidebar se renderizo antes del update.
+            # caption de ratio) lea el session_state actualizado.
             st.rerun()
+
+        # ── Lectura del resultado a mostrar en detalle ────────────────────
+        #   Si el usuario cambió el selectbox después de un batch, tomamos
+        #   el resultado correspondiente de batch_results; si no hay batch,
+        #   recurrimos a last_result (flujo individual histórico).
+        result = None
+        batch_results = st.session_state.batch_results
+        if batch_results and 0 <= selected_idx < len(batch_results):
+            result = batch_results[selected_idx]["result"]
+            # Mantener last_result sincronizado con la selección actual
+            st.session_state.last_result = result
         else:
             result = st.session_state.last_result
 
         if result is None:
-            st.info("👈 Sube una imagen y presiona **Ejecutar Inferencia**.")
+            st.info("👈 Sube una o más imágenes y presiona **Ejecutar Inferencia**.")
             st.stop()
 
         # Badge de modo
@@ -1231,8 +1325,90 @@ with col_right:
                     for eid, cnt in sorted(votes.items()):
                         st.caption(f"  Exp{int(eid)+1}: {cnt} voto(s)")
 
+        # ── 6. Resumen del Batch (cuando hay más de una imagen) ───────────
+        batch_results = st.session_state.batch_results
+        if len(batch_results) > 1:
+            st.markdown(
+                '<div class="section-title">📦 Resumen del Batch</div>',
+                unsafe_allow_html=True,
+            )
+
+            df_batch = pd.DataFrame([
+                {
+                    "#":           i + 1,
+                    "Archivo":     entry["filename"],
+                    "Modalidad":   entry["modality"],
+                    "Experto":     EXPERTS_UI[entry["expert_idx"]]["name"],
+                    "Predicción":  entry["pred_label"],
+                    "Confianza":   f"{entry['confidence']*100:.1f}%",
+                    "Entropía":    f"{entry['entropy']:.3f}",
+                    "Latencia ms": f"{entry['latency_ms']:.1f}",
+                    "Modo":        entry["mode"],
+                }
+                for i, entry in enumerate(batch_results)
+            ])
+
+            # Resaltar la fila del archivo seleccionado en el selector
+            def _hl_selected(row):
+                return (["background-color:#d4edda; font-weight:600"] * len(row)
+                        if row["#"] == selected_idx + 1
+                        else [""] * len(row))
+
+            st.dataframe(
+                df_batch.style.apply(_hl_selected, axis=1),
+                use_container_width=True, hide_index=True,
+            )
+
+            # Métricas agregadas
+            c_b1, c_b2, c_b3 = st.columns(3)
+            with c_b1:
+                avg_conf = np.mean([e["confidence"] for e in batch_results]) * 100
+                st.markdown(f"""<div class="metric-card">
+                    <h3>{avg_conf:.1f}%</h3>
+                    <p>Confianza media</p></div>""", unsafe_allow_html=True)
+            with c_b2:
+                avg_lat = np.mean([e["latency_ms"] for e in batch_results])
+                st.markdown(f"""<div class="metric-card">
+                    <h3>{avg_lat:.1f} ms</h3>
+                    <p>Latencia media</p></div>""", unsafe_allow_html=True)
+            with c_b3:
+                n_ood = sum(1 for e in batch_results if e["entropy"] > ood_threshold)
+                st.markdown(f"""<div class="metric-card">
+                    <h3>{n_ood} / {len(batch_results)}</h3>
+                    <p>OOD detectados</p></div>""", unsafe_allow_html=True)
+
+            # Distribución de expertos usados en el batch
+            exp_counts = np.zeros(5, dtype=int)
+            for e in batch_results:
+                exp_counts[e["expert_idx"]] += 1
+
+            fig_dist = go.Figure(go.Bar(
+                x=[EXPERTS_UI[i]["name"].split("—")[1].strip() for i in range(5)],
+                y=exp_counts,
+                marker_color=["#2d6a9f" if c > 0 else "#d3d3d3" for c in exp_counts],
+                text=[str(c) if c > 0 else "" for c in exp_counts],
+                textposition="outside",
+            ))
+            fig_dist.update_layout(
+                title=f"Distribución de enrutamiento · {len(batch_results)} imagen(es)",
+                yaxis=dict(title="Imágenes enrutadas", rangemode="tozero"),
+                height=240, margin=dict(t=40, b=30, l=30, r=10),
+                plot_bgcolor="#f8fafc", paper_bgcolor="#f8fafc",
+            )
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+            # Descarga CSV del resumen
+            csv_bytes = df_batch.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇️ Descargar resumen del batch (CSV)",
+                data=csv_bytes,
+                file_name="batch_results.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
     else:
-        st.info("👈 Sube una imagen y presiona **Ejecutar Inferencia** para ver los resultados.")
+        st.info("👈 Sube una o varias imágenes y presiona **Ejecutar Inferencia** para ver los resultados.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SECCIÓN INFERIOR — Ablation, Load Balance, OOD

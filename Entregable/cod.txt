@@ -1,0 +1,8 @@
+https://github.com/isabellaperezcav/MedRoute-Multimodal-Medical-Classification-with-Mixture-of-Experts
+
+Realizado por: 
+
+Luz A. Carabalí Mulato
+Martín García Chagueza
+Isabella Pérez Caviedes
+Nicolás Zapata Obando

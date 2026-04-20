@@ -3,13 +3,18 @@ experts.py — Carga de los 5 expertos médicos
 Cada experto tiene arquitectura distinta. Este módulo reconstruye cada
 arquitectura y carga sus pesos desde checkpoint.
 
-Mapa de expertos
+Mapa de expertos (alineado con EXPERT_MAP del router:
+  {chest:0, isic:1, osteo:2, luna:3, panc:4})
 ----------------
-  0 → Experto 1 (NIH ChestX-ray14) → ConvNeXt-Tiny     | 6 clases  multilabel
-  1 → Experto 2 (Osteoartritis)     → EfficientNet-B0  | 5 clases
-  2 → Experto 3 (ISIC 2019)         → ConvNeXt-Small   | 8 clases
-  3 → Experto 4 (LUNA16 3D)         → DenseNet 3D      | 2 clases binario
-  4 → Experto 5 (Pancreas CT 3D)    → ResNet 3D        | 2 clases binario
+  0 → ChestX-ray14     → ConvNeXt-Tiny     | 6 clases  multilabel
+  1 → ISIC 2019        → ConvNeXt-Small    | 8 clases  multiclass
+  2 → Osteoartritis    → EfficientNet-B0   | 5 clases  multiclass
+  3 → LUNA16 3D        → DenseNet 3D       | 2 clases  binario
+  4 → Pancreas CT 3D   → ResNet 3D         | 2 clases  binario
+
+Nota: los nombres de carpeta/archivo ("experto2_osteo", "experto3_isic") vienen
+del PDF original donde el orden era distinto. El label del router NO los sigue;
+sigue EXPERT_MAP del training de embeddings.
 """
 
 import torch
@@ -216,26 +221,26 @@ def _load_checkpoint(model: nn.Module, ckpt_path: Path,
 
 
 def _build_expert1(ckpt_path: Path) -> nn.Module:
-    """Experto 1 — ChestX-ray14 → ConvNeXt-Tiny (6 clases multilabel)."""
+    """label 0 — ChestX-ray14 → ConvNeXt-Tiny (6 clases multilabel)."""
     import timm
     model = timm.create_model("convnext_tiny", pretrained=False, num_classes=6)
-    print(f"  [Exp1] ConvNeXt-Tiny | 6 clases | {ckpt_path.name}")
+    print(f"  [label 0 / chest] ConvNeXt-Tiny | 6 clases | {ckpt_path.name}")
     return _load_checkpoint(model, ckpt_path)
 
 
 def _build_expert2(ckpt_path: Path) -> nn.Module:
-    """Experto 2 — Osteoartritis → EfficientNet-B0 + cabeza personalizada (5 clases)."""
+    """label 2 — Osteoartritis → EfficientNet-B0 + cabeza personalizada (5 clases)."""
     import timm
     model = timm.create_model("efficientnet_b0", pretrained=False, num_classes=5)
-    print(f"  [Exp2] EfficientNet-B0 | 5 clases | {ckpt_path.name}")
+    print(f"  [label 2 / osteo] EfficientNet-B0 | 5 clases | {ckpt_path.name}")
     return _load_checkpoint(model, ckpt_path)
 
 
 def _build_expert3(ckpt_path: Path) -> nn.Module:
-    """Experto 3 — ISIC 2019 → ConvNeXt-Small (8 clases)."""
+    """label 1 — ISIC 2019 → ConvNeXt-Small (8 clases)."""
     import timm
     model = timm.create_model("convnext_small", pretrained=False, num_classes=8)
-    print(f"  [Exp3] ConvNeXt-Small | 8 clases | {ckpt_path.name}")
+    print(f"  [label 1 / isic] ConvNeXt-Small | 8 clases | {ckpt_path.name}")
     return _load_checkpoint(model, ckpt_path)
 
 
@@ -258,19 +263,22 @@ def _build_expert5(ckpt_path: Path) -> nn.Module:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Mapa: expert_id → (carpeta_relativa, nombre_ckpt, builder_fn)
+# [FIX label swap] label=1 → ISIC, label=2 → Osteo (alineado con EXPERT_MAP del router).
+# Los nombres de archivo "experto2_osteo" / "experto3_isic" son heredados del PDF
+# (naming local invertido) y quedan asociados a sus labels reales aqui.
 _EXPERT_CONFIG = {
     0: ("expertos/experto1_Xray",     "ckpt_exp1v21_f0_best.pt",  _build_expert1),
-    1: ("expertos/experto2_osteo",    "expert2_osteo_best.pth",   _build_expert2),
-    2: ("expertos/experto3_isic",     "expert3_isic_best.pth",    _build_expert3),
+    1: ("expertos/experto3_isic",     "expert3_isic_best.pth",    _build_expert3),  # ISIC → label 1
+    2: ("expertos/experto2_osteo",    "expert2_osteo_best.pth",   _build_expert2),  # Osteo → label 2
     3: ("expertos/experto4_luna",     "LUNA-LIDCIDRI_best.pt",    _build_expert4),
     4: ("expertos/experto5_pancreas", "exp5_best.pth",            _build_expert5),
 }
 
-# Número de clases y tipo de tarea por experto
+# Número de clases y tipo de tarea por experto (alineado con EXPERT_MAP del router)
 EXPERT_META = {
     0: {"name": "ChestX-ray14", "num_classes": 6,  "task": "multilabel"},
-    1: {"name": "Osteoartritis","num_classes": 5,  "task": "multiclass"},
-    2: {"name": "ISIC2019",     "num_classes": 8,  "task": "multiclass"},
+    1: {"name": "ISIC2019",     "num_classes": 8,  "task": "multiclass"},
+    2: {"name": "Osteoartritis","num_classes": 5,  "task": "multiclass"},
     3: {"name": "LUNA16",       "num_classes": 2,  "task": "binary"},
     4: {"name": "Pancreas",     "num_classes": 2,  "task": "binary"},
 }

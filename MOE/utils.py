@@ -69,20 +69,22 @@ class Timer:
 
 # ── Formato de resultados ─────────────────────────────────────────────────────
 
+# [FIX label swap] labels alineados con EXPERT_MAP del router:
+# {chest:0, isic:1, osteo:2, luna:3, panc:4}
 EXPERT_NAMES = {
     0: "ChestX-ray14 (NIH)",
-    1: "Osteoartritis (KL Grade)",
-    2: "Dermoscopia (ISIC 2019)",
+    1: "Dermoscopia (ISIC 2019)",
+    2: "Osteoartritis (KL Grade)",
     3: "Nódulos Pulmonares (LUNA16)",
     4: "Páncreas CT (Segmentación)",
 }
 
 EXPERT_LABELS = {
-    0: ["Atelectasis", "Cardiomegaly", "Effusion", "Infiltration", "Mass", "Nodule"],
-    1: ["KL-0 (Normal)", "KL-1 (Dudoso)", "KL-2 (Leve)", "KL-3 (Moderado)", "KL-4 (Severo)"],
-    2: ["MEL", "NV", "BCC", "AKIEC", "BKL", "DF", "VASC", "SCC"],
-    3: ["Negativo", "Nódulo Maligno"],
-    4: ["Normal", "Patología"],
+    0: ["Infiltration", "Effusion", "Atelectasis", "Nodule", "Mass", "Pneumothorax"],
+    1: ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC"],
+    2: ["KL-0 Normal", "KL-1 Dudoso", "KL-2 Leve", "KL-3 Moderado", "KL-4 Severo"],
+    3: ["Sin nódulo", "Con nódulo"],
+    4: ["Normal", "Con tumor"],
 }
 
 

@@ -165,10 +165,15 @@ save_result_json(resultados, "mis_resultados.json")
 | ID | Dataset | Arquitectura | Clases | Tarea |
 |----|---------|-------------|--------|-------|
 | 0 | NIH ChestX-ray14 | ConvNeXt-Tiny | 6 | Multilabel |
-| 1 | Osteoartritis | EfficientNet-B0 | 5 | Multiclase (KL grade) |
-| 2 | ISIC 2019 | ConvNeXt-Small | 8 | Multiclase |
+| 1 | ISIC 2019 | ConvNeXt-Small | 8 | Multiclase |
+| 2 | Osteoartritis | EfficientNet-B0 | 5 | Multiclase (KL grade) |
 | 3 | LUNA16 CT | DenseNet 3D | 2 | Binario |
 | 4 | Pancreas CT | ResNet 3D | 2 | Binario |
+
+Nota: los labels (0-4) corresponden a `EXPERT_MAP` del router entrenado en NB03
+(`embeddings/-.py`). Los nombres de carpeta local (`experto2_osteo/`,
+`experto3_isic/`) vienen del PDF original y no coinciden con el label (ver
+`_EXPERT_CONFIG` en `experts.py`).
 
 ---
 

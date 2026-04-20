@@ -149,8 +149,11 @@ ABLATION_JSON  = ROOT_DIR / "ablation" / "outputs" / "ablation" / "ablation_resu
 EMBEDDINGS_DIR = ROOT_DIR / "embedings" / "Output embeddings"
 
 # ─── Estado de sesión ─────────────────────────────────────────────────────────
+# NOTA: f_i_history se inicializa a ceros (no a [0.20]*5) para que
+# compute_load_ratio distinga inequívocamente "sin inferencias" (suma=0)
+# de "5 expertos activos con carga uniforme" (suma=1, cada entrada 0.20).
 for key, default in [
-    ("f_i_history",  np.array([0.20] * 5)),
+    ("f_i_history",  np.zeros(5, dtype=np.float64)),
     ("n_inferences", 0),
     ("last_result",  None),
 ]:
@@ -433,18 +436,45 @@ def _demo_inference(img_pil: Image.Image, error_msg: str = "") -> dict:
 #  FUNCIONES AUXILIARES UI
 # ══════════════════════════════════════════════════════════════════════════════
 
-def update_load_balance(expert_idx: int):
+def update_load_balance(expert_idx):
+    expert_idx = int(expert_idx)
+    if not (0 <= expert_idx < 5):
+        return
     n         = st.session_state.n_inferences
-    current   = st.session_state.f_i_history
+    current   = np.asarray(st.session_state.f_i_history, dtype=np.float64)
     counts    = current * n
     counts[expert_idx] += 1
-    st.session_state.f_i_history = counts / counts.sum()
+    total = counts.sum()
+    if total <= 0:
+        return
+    st.session_state.f_i_history  = counts / total
     st.session_state.n_inferences = n + 1
 
 
-def compute_load_ratio() -> float:
+def compute_load_ratio():
+    """
+    Cociente max/min de f_i, computado SOLO sobre los expertos que han
+    recibido al menos una inferencia.
+
+    - Sin inferencias: (None, 0).
+    - Un solo experto activo: ratio = 1.0 (balance trivial).
+    - Varios activos: max(activos) / min(activos), sin epsilon artificial.
+    - La penalizacion (panel y sidebar) solo se dispara cuando los 5
+      expertos estan activos, porque el paper define el cociente sobre
+      los 5 dominios. Mientras falten, se muestra ratio entre activos
+      con etiqueta explicita de cobertura.
+
+    Retorna (ratio: float | None, n_active: int en [0, 5]).
+    """
     fi = st.session_state.f_i_history
-    return float(fi.max() / (fi.min() + 1e-8))
+    n  = st.session_state.n_inferences
+    if n == 0:
+        return None, 0
+    active = fi[fi > 0]
+    if len(active) == 0:
+        return None, 0
+    ratio = float(active.max() / active.min())
+    return ratio, int(len(active))
 
 
 def overlay_heatmap(img_pil: Image.Image, attn: np.ndarray) -> np.ndarray:
@@ -786,16 +816,38 @@ with st.sidebar:
 
     st.divider()
     if st.button("🔄 Reiniciar contadores de carga"):
-        st.session_state.f_i_history  = np.array([0.20] * 5)
+        st.session_state.f_i_history  = np.zeros(5, dtype=np.float64)
         st.session_state.n_inferences = 0
         st.session_state.last_result  = None
         st.success("Contadores reiniciados")
 
     st.divider()
     st.caption(f"Total inferencias: **{st.session_state.n_inferences}**")
-    ratio  = compute_load_ratio()
-    color  = "🔴" if ratio > balance_limit else "🟢"
-    st.caption(f"Cociente max/min f_i: {color} **{ratio:.2f}** (límite {balance_limit:.2f})")
+    ratio, n_active = compute_load_ratio()
+    if ratio is None:
+        st.caption(f"Cociente max/min f_i: ⚪ **—** (sin inferencias, límite {balance_limit:.2f})")
+    elif n_active < 5:
+        st.caption(f"Cociente max/min f_i ({n_active}/5 activos): 🟡 **{ratio:.2f}** (límite {balance_limit:.2f})")
+    else:
+        color  = "🔴" if ratio > balance_limit else "🟢"
+        st.caption(f"Cociente max/min f_i: {color} **{ratio:.2f}** (límite {balance_limit:.2f})")
+
+    with st.expander("🔍 Debug Load Balance", expanded=False):
+        fi_dbg = np.asarray(st.session_state.f_i_history, dtype=np.float64)
+        st.code(
+            "n_inferences = {n}\n"
+            "f_i          = [{fi}]\n"
+            "sum(f_i)     = {s:.6f}\n"
+            "n_active     = {na} (expertos con f_i > 0)\n"
+            "ratio        = {r}\n".format(
+                n  = st.session_state.n_inferences,
+                fi = ", ".join(f"{v:.6f}" for v in fi_dbg),
+                s  = float(fi_dbg.sum()),
+                na = int((fi_dbg > 0).sum()),
+                r  = f"{ratio:.6f}" if ratio is not None else "None",
+            ),
+            language="text",
+        )
 
     if MOE_AVAILABLE and torch.cuda.is_available():
         st.divider()
@@ -1024,6 +1076,12 @@ with col_right:
                 result = real_inference(img_pil, is_nifti_input, nifti_volume)
             st.session_state.last_result = result
             update_load_balance(result["expert_idx"])
+            # Rerun completo para que el sidebar (Debug Load Balance y
+            # caption de ratio) lea el session_state actualizado. Sin esto,
+            # esos widgets quedan atrapados en el estado previo a la
+            # inferencia porque Streamlit ejecuta el script top-to-bottom
+            # y la sidebar se renderizo antes del update.
+            st.rerun()
         else:
             result = st.session_state.last_result
 
@@ -1274,9 +1332,9 @@ if tabs_lower:
     if show_balance:
         with tabs[tab_idx]:
             st.markdown("#### Load Balance — Distribución Acumulada de Enrutamiento")
-            fi     = st.session_state.f_i_history
-            ratio  = compute_load_ratio()
-            n_inf  = st.session_state.n_inferences
+            fi              = st.session_state.f_i_history
+            ratio, n_active = compute_load_ratio()
+            n_inf           = st.session_state.n_inferences
 
             col_lb1, col_lb2 = st.columns([1.6, 1])
             with col_lb1:
@@ -1309,15 +1367,36 @@ if tabs_lower:
                     bar_html = f"{'█' * int(pct // 4)}{'░' * (25 - int(pct // 4))}"
                     st.markdown(f"**Exp{i+1}** `{bar_html}` {pct:.1f}%")
                 st.divider()
-                status_icon = "🔴" if ratio > balance_limit else "🟢"
-                st.metric("Cociente max/min", f"{ratio:.3f}",
-                          delta=f"Límite: {balance_limit:.2f}")
-                if ratio > balance_limit:
-                    st.error(f"{status_icon} **PENALIZACIÓN ACTIVA** — cociente "
-                             f"{ratio:.2f} > {balance_limit:.2f}\n\nAjusta α en Auxiliary Loss.")
+                if ratio is None:
+                    st.metric("Cociente max/min", "—",
+                              delta=f"Límite: {balance_limit:.2f}")
+                    st.info(
+                        "⚪ Aún no hay inferencias. Carga al menos una imagen "
+                        "para comenzar a medir el balance de carga."
+                    )
+                elif n_active < 5:
+                    missing = 5 - n_active
+                    st.metric(
+                        f"Cociente max/min ({n_active}/5 activos)",
+                        f"{ratio:.3f}",
+                        delta=f"Límite: {balance_limit:.2f}",
+                    )
+                    st.warning(
+                        f"🟡 **Cobertura parcial** — el cociente se calcula sobre "
+                        f"los **{n_active}** experto(s) que han recibido "
+                        f"inferencias. Faltan **{missing}** por activar para "
+                        f"evaluar el balance completo sobre los 5 dominios."
+                    )
                 else:
-                    st.success(f"{status_icon} Balance dentro del límite permitido.")
-                st.caption("_La penalización aplica solo al router ViT+Linear._")
+                    status_icon = "🔴" if ratio > balance_limit else "🟢"
+                    st.metric("Cociente max/min", f"{ratio:.3f}",
+                              delta=f"Límite: {balance_limit:.2f}")
+                    if ratio > balance_limit:
+                        st.error(f"{status_icon} **PENALIZACIÓN ACTIVA** — cociente "
+                                 f"{ratio:.2f} > {balance_limit:.2f}\n\nAjusta α en Auxiliary Loss.")
+                    else:
+                        st.success(f"{status_icon} Balance dentro del límite permitido.")
+                st.caption("_La penalización aplica solo al router ViT+Linear y requiere los 5 expertos activos._")
         tab_idx += 1
 
     # ── 8. OOD Detection ─────────────────────────────────────────────────────

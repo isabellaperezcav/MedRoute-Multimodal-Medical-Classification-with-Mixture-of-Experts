@@ -438,6 +438,45 @@ def _demo_inference(img_pil: Image.Image, error_msg: str = "") -> dict:
 #  FUNCIONES AUXILIARES UI
 # ══════════════════════════════════════════════════════════════════════════════
 
+def detect_ood(result: dict, entropy_thr: float, cos_thr: float) -> dict:
+    """
+    Decide si una imagen es OOD combinando dos señales complementarias:
+
+    1. Entropía del gating (votos kNN dispersos) → indeterminación del router.
+    2. Similitud coseno con el vecino más cercano (distancia mínima al training
+       set en el espacio CLS) → qué tan lejos cae la imagen de cualquier
+       dominio conocido.
+
+    Ambas señales son necesarias porque por separado fallan:
+    - Entropía sola: una foto de perro puede concentrar sus 5 vecinos en un
+      único experto por azar y dar entropía baja pese a estar lejos de todo.
+    - Coseno solo: una imagen ambigua entre dos modalidades médicas (p. ej.
+      una radiografía con fuerte artefacto) puede tener coseno alto pero
+      entropía alta por confusión entre expertos legítimos.
+
+    La combinación OR captura ambos regímenes.
+
+    Retorna dict con is_ood, reasons, max_cos, entropy.
+    """
+    entropy = float(result.get("entropy", 0.0))
+    router_info   = result.get("router_info", {}) or {}
+    cosine_scores = router_info.get("cosine_scores", []) or []
+    max_cos = float(max(cosine_scores)) if cosine_scores else 1.0
+
+    reasons = []
+    if entropy > entropy_thr:
+        reasons.append(f"entropía {entropy:.3f} > {entropy_thr:.2f}")
+    if max_cos < cos_thr:
+        reasons.append(f"coseno máx {max_cos:.3f} < {cos_thr:.2f}")
+
+    return {
+        "is_ood":  len(reasons) > 0,
+        "reasons": " y ".join(reasons) if reasons else "",
+        "max_cos": max_cos,
+        "entropy": entropy,
+    }
+
+
 def update_load_balance(expert_idx):
     expert_idx = int(expert_idx)
     if not (0 <= expert_idx < 5):
@@ -812,7 +851,22 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**📌 Umbrales**")
-    ood_threshold = st.slider("Umbral entropía OOD", 0.5, 3.0, float(OOD_THRESHOLD), 0.05)
+    ood_threshold = st.slider(
+        "Umbral entropía OOD", 0.5, 3.0, float(OOD_THRESHOLD), 0.05,
+        help="Entropía del gating kNN. Alta entropía = votos dispersos entre expertos.",
+    )
+    ood_cos_threshold = st.slider(
+        "Umbral coseno mínimo (OOD)", 0.10, 0.95, 0.50, 0.01,
+        help=("Si la similitud coseno con el vecino más cercano cae por debajo "
+              "de este umbral, la imagen se marca como OOD y no se delega al experto. "
+              "Imágenes médicas reales: 0,6–0,98. Imágenes no médicas (p. ej. perros): 0,1–0,4."),
+    )
+    block_ood_inference = st.checkbox(
+        "Bloquear predicción del experto si OOD",
+        value=True,
+        help="Si se activa y la imagen se detecta como OOD, el experto no recibe la imagen "
+             "y tampoco se contabiliza en el balance de carga.",
+    )
     balance_limit = st.slider("Límite cociente max/min f_i", 1.0, 3.0, 1.30, 0.05,
                                help="Penalización al superar este cociente.")
 
@@ -1133,8 +1187,15 @@ with col_right:
                     med_i["is_volumetric"],
                     med_i["volume"],
                 )
-                # Registrar en balance de carga y acumular
-                update_load_balance(res_i["expert_idx"])
+
+                # Chequeo OOD combinado (entropía + coseno mínimo)
+                ood_i = detect_ood(res_i, ood_threshold, ood_cos_threshold)
+
+                # Contabilizar en load balance solo si NO es OOD (o si el bloqueo está off).
+                # Así las imágenes rechazadas no contaminan f_i.
+                if not (ood_i["is_ood"] and block_ood_inference):
+                    update_load_balance(res_i["expert_idx"])
+
                 entry = {
                     "filename":    upl.name,
                     "modality":    med_i["modality"],
@@ -1144,6 +1205,9 @@ with col_right:
                     "entropy":     res_i["entropy"],
                     "latency_ms":  res_i["latency_ms"],
                     "mode":        res_i.get("mode", "demo"),
+                    "is_ood":      ood_i["is_ood"],
+                    "ood_reasons": ood_i["reasons"],
+                    "max_cos":     ood_i["max_cos"],
                     "result":      res_i,
                     "preview_pil": med_i["preview_pil"],
                     "is_nifti":    med_i["is_volumetric"],
@@ -1194,48 +1258,81 @@ with col_right:
                         f'<small style="color:#856404">{reason[:80]}</small>',
                         unsafe_allow_html=True)
 
+        # ── Chequeo OOD sobre el resultado actualmente seleccionado ───────
+        #   Se recalcula en cada render para que los cambios de umbral en la
+        #   sidebar actualicen el banner sin tener que re-ejecutar inferencia.
+        ood_now = detect_ood(result, ood_threshold, ood_cos_threshold)
+        ood_blocked = ood_now["is_ood"] and block_ood_inference
+
+        if ood_now["is_ood"]:
+            st.markdown(f"""
+            <div class="ood-alert" style="border-color:#dc3545; background:#f8d7da;">
+            🚫 <strong>IMAGEN FUERA DE DISTRIBUCIÓN (OOD)</strong><br>
+            <small>Motivo: {ood_now["reasons"]}.</small><br>
+            <small>Coseno al vecino más cercano: <code>{ood_now["max_cos"]:.3f}</code>
+            · Entropía H(g): <code>{ood_now["entropy"]:.3f}</code>.</small><br>
+            {"<strong>El experto NO recibió esta imagen.</strong> El router la rechazó antes de la delegación."
+              if ood_blocked else
+              "<small><em>Bloqueo desactivado: el experto procesó la imagen de todos modos. "
+              "Revisa el resultado con cautela.</em></small>"}
+            </div>
+            """, unsafe_allow_html=True)
+
         exp_info = EXPERTS_UI[result["expert_idx"]]
 
-        # ── 3. Inferencia en tiempo real ──────────────────────────────────
-        st.markdown('<div class="section-title">⚡ 3. Inferencia en Tiempo Real</div>',
-                    unsafe_allow_html=True)
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(f"""<div class="metric-card">
-                <h3 style="font-size:1.05em">{result['pred_label']}</h3>
-                <p>Predicción</p></div>""", unsafe_allow_html=True)
-        with c2:
-            conf_pct   = result["confidence"] * 100
-            conf_color = "#28a745" if conf_pct > 70 else "#ffc107"
-            st.markdown(f"""<div class="metric-card">
-                <h3 style="color:{conf_color}">{conf_pct:.1f}%</h3>
-                <p>Confianza</p></div>""", unsafe_allow_html=True)
-        with c3:
-            st.markdown(f"""<div class="metric-card">
-                <h3>{result['latency_ms']:.1f} ms</h3>
-                <p>Tiempo inferencia</p></div>""", unsafe_allow_html=True)
-
-        # Barra de probabilidades por clase
-        with st.expander("Ver distribución de probabilidades por clase"):
-            labels_exp = result.get("labels", LABELS_UI.get(result["expert_idx"], []))
-            probs_exp  = result["probs"]
-            fig_pb = go.Figure(go.Bar(
-                x=probs_exp,
-                y=labels_exp,
-                orientation="h",
-                marker_color=["#2d6a9f" if i == result["pred_idx"] else "#a8c8e8"
-                              for i in range(len(probs_exp))],
-                text=[f"{p:.3f}" for p in probs_exp],
-                textposition="outside",
-            ))
-            fig_pb.update_layout(
-                height=max(180, len(labels_exp) * 30),
-                margin=dict(t=10, b=10, l=10, r=60),
-                xaxis=dict(range=[0, 1.1]),
-                plot_bgcolor="#f8fafc", paper_bgcolor="#f8fafc",
+        # Si está bloqueado por OOD, no mostramos predicción del experto.
+        # El flujo sigue con el heatmap y los detalles del router para
+        # que el usuario vea POR QUÉ fue rechazada.
+        if ood_blocked:
+            st.info(
+                "ℹ️ Las secciones de predicción del experto están suprimidas "
+                "porque la imagen se rechazó. Puedes desactivar el bloqueo en "
+                "la barra lateral si quieres forzar la inferencia del experto."
             )
-            st.plotly_chart(fig_pb, use_container_width=True)
+
+        # ── 3. Inferencia en tiempo real ──────────────────────────────────
+        # Suprimida cuando la imagen se rechazó por OOD: no tiene sentido
+        # mostrar la predicción de un experto que nunca procesó la imagen.
+        if not ood_blocked:
+            st.markdown('<div class="section-title">⚡ 3. Inferencia en Tiempo Real</div>',
+                        unsafe_allow_html=True)
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(f"""<div class="metric-card">
+                    <h3 style="font-size:1.05em">{result['pred_label']}</h3>
+                    <p>Predicción</p></div>""", unsafe_allow_html=True)
+            with c2:
+                conf_pct   = result["confidence"] * 100
+                conf_color = "#28a745" if conf_pct > 70 else "#ffc107"
+                st.markdown(f"""<div class="metric-card">
+                    <h3 style="color:{conf_color}">{conf_pct:.1f}%</h3>
+                    <p>Confianza</p></div>""", unsafe_allow_html=True)
+            with c3:
+                st.markdown(f"""<div class="metric-card">
+                    <h3>{result['latency_ms']:.1f} ms</h3>
+                    <p>Tiempo inferencia</p></div>""", unsafe_allow_html=True)
+
+            # Barra de probabilidades por clase
+            with st.expander("Ver distribución de probabilidades por clase"):
+                labels_exp = result.get("labels", LABELS_UI.get(result["expert_idx"], []))
+                probs_exp  = result["probs"]
+                fig_pb = go.Figure(go.Bar(
+                    x=probs_exp,
+                    y=labels_exp,
+                    orientation="h",
+                    marker_color=["#2d6a9f" if i == result["pred_idx"] else "#a8c8e8"
+                                  for i in range(len(probs_exp))],
+                    text=[f"{p:.3f}" for p in probs_exp],
+                    textposition="outside",
+                ))
+                fig_pb.update_layout(
+                    height=max(180, len(labels_exp) * 30),
+                    margin=dict(t=10, b=10, l=10, r=60),
+                    xaxis=dict(range=[0, 1.1]),
+                    plot_bgcolor="#f8fafc", paper_bgcolor="#f8fafc",
+                )
+                st.plotly_chart(fig_pb, use_container_width=True)
 
         # ── 4. Attention Heatmap ──────────────────────────────────────────
         st.markdown('<div class="section-title">🔥 4. Attention Heatmap — Router ViT</div>',
@@ -1270,47 +1367,54 @@ with col_right:
             st.caption("_Heatmap simulado (demo). Conecta los checkpoints para ver la atención real._")
 
         # ── 5. Panel del Experto Activado ─────────────────────────────────
-        st.markdown('<div class="section-title">🤖 5. Experto Activado</div>',
-                    unsafe_allow_html=True)
+        # Suprimido cuando está bloqueado por OOD: el experto no recibió la
+        # imagen, así que mostrar su nombre "activado" sería engañoso.
+        # El detalle del router k-NN SÍ se muestra porque explica por qué
+        # la imagen fue rechazada (vecinos lejanos, coseno bajo).
+        router_info = result.get("router_info", {})
+        if not ood_blocked:
+            st.markdown('<div class="section-title">🤖 5. Experto Activado</div>',
+                        unsafe_allow_html=True)
 
-        gating_scores = result["gating"]
-        router_info   = result.get("router_info", {})
-        confidence_r  = router_info.get("confidence", gating_scores[result["expert_idx"]])
+            gating_scores = result["gating"]
+            confidence_r  = router_info.get("confidence", gating_scores[result["expert_idx"]])
 
-        st.markdown(f"""
-        <div class="expert-card">
-          <h4>🏆 {exp_info['name']}</h4>
-          <p>🏗️ <strong>Arquitectura:</strong> {exp_info['arch']}</p>
-          <p>📊 <strong>Dataset origen:</strong> {exp_info['dataset']}</p>
-          <p>🎯 <strong>Tarea:</strong> {exp_info['task']}</p>
-          <p>📈 <strong>Gating score:</strong>
-             <code>{gating_scores[result['expert_idx']]:.4f}</code>
-             &nbsp;|&nbsp;
-             <strong>Router conf.:</strong> <code>{float(confidence_r):.2%}</code>
-             &nbsp;<span class="badge badge-blue">k-NN FAISS</span></p>
-        </div>
-        """, unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="expert-card">
+              <h4>🏆 {exp_info['name']}</h4>
+              <p>🏗️ <strong>Arquitectura:</strong> {exp_info['arch']}</p>
+              <p>📊 <strong>Dataset origen:</strong> {exp_info['dataset']}</p>
+              <p>🎯 <strong>Tarea:</strong> {exp_info['task']}</p>
+              <p>📈 <strong>Gating score:</strong>
+                 <code>{gating_scores[result['expert_idx']]:.4f}</code>
+                 &nbsp;|&nbsp;
+                 <strong>Router conf.:</strong> <code>{float(confidence_r):.2%}</code>
+                 &nbsp;<span class="badge badge-blue">k-NN FAISS</span></p>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # Gating bar chart
-        fig_gate = go.Figure(go.Bar(
-            x=[EXPERTS_UI[i]["name"].split("—")[1].strip() for i in range(5)],
-            y=gating_scores,
-            marker_color=["#2d6a9f" if i == result["expert_idx"] else "#a8c8e8"
-                          for i in range(5)],
-            text=[f"{g:.3f}" for g in gating_scores],
-            textposition="outside",
-        ))
-        fig_gate.update_layout(
-            title="Gating scores — todos los expertos",
-            yaxis=dict(range=[0, 1.15], title="Score"),
-            height=230, margin=dict(t=40, b=30, l=30, r=10),
-            plot_bgcolor="#f8fafc", paper_bgcolor="#f8fafc",
-        )
-        st.plotly_chart(fig_gate, use_container_width=True)
+            # Gating bar chart
+            fig_gate = go.Figure(go.Bar(
+                x=[EXPERTS_UI[i]["name"].split("—")[1].strip() for i in range(5)],
+                y=gating_scores,
+                marker_color=["#2d6a9f" if i == result["expert_idx"] else "#a8c8e8"
+                              for i in range(5)],
+                text=[f"{g:.3f}" for g in gating_scores],
+                textposition="outside",
+            ))
+            fig_gate.update_layout(
+                title="Gating scores — todos los expertos",
+                yaxis=dict(range=[0, 1.15], title="Score"),
+                height=230, margin=dict(t=40, b=30, l=30, r=10),
+                plot_bgcolor="#f8fafc", paper_bgcolor="#f8fafc",
+            )
+            st.plotly_chart(fig_gate, use_container_width=True)
 
-        # Detalle k-NN si está disponible
+        # Detalle k-NN si está disponible (siempre visible, ayuda a justificar el OOD)
         if router_info and router_info.get("cosine_scores"):
-            with st.expander("Ver detalle del router k-NN"):
+            expander_label = ("Ver vecinos del router k-NN (razón del rechazo OOD)"
+                              if ood_blocked else "Ver detalle del router k-NN")
+            with st.expander(expander_label, expanded=ood_blocked):
                 cols_r = st.columns(2)
                 with cols_r[0]:
                     st.markdown("**Vecinos más cercanos (k=5):**")
@@ -1318,7 +1422,8 @@ with col_right:
                     nbr_scores = router_info.get("cosine_scores",   [])
                     for j, (lbl, sc) in enumerate(zip(nbr_labels, nbr_scores)):
                         expert_name = EXPERTS_UI.get(int(lbl), {}).get("name", f"Exp{lbl}")
-                        st.caption(f"  {j+1}. {expert_name} — cos={sc:.4f}")
+                        low_cos = " ⚠️" if sc < ood_cos_threshold else ""
+                        st.caption(f"  {j+1}. {expert_name} — cos={sc:.4f}{low_cos}")
                 with cols_r[1]:
                     st.markdown("**Votos por experto:**")
                     votes = router_info.get("vote_counts", {})
@@ -1338,8 +1443,12 @@ with col_right:
                     "#":           i + 1,
                     "Archivo":     entry["filename"],
                     "Modalidad":   entry["modality"],
-                    "Experto":     EXPERTS_UI[entry["expert_idx"]]["name"],
-                    "Predicción":  entry["pred_label"],
+                    "OOD":         "🚫 Rechazada" if entry.get("is_ood") else "✅ OK",
+                    "Experto":     ("— (bloqueado)" if entry.get("is_ood") and block_ood_inference
+                                     else EXPERTS_UI[entry["expert_idx"]]["name"]),
+                    "Predicción":  ("—" if entry.get("is_ood") and block_ood_inference
+                                     else entry["pred_label"]),
+                    "Cos máx":     f"{entry.get('max_cos', 0.0):.3f}",
                     "Confianza":   f"{entry['confidence']*100:.1f}%",
                     "Entropía":    f"{entry['entropy']:.3f}",
                     "Latencia ms": f"{entry['latency_ms']:.1f}",
@@ -1359,28 +1468,40 @@ with col_right:
                 use_container_width=True, hide_index=True,
             )
 
-            # Métricas agregadas
+            # Métricas agregadas (solo imágenes no-OOD para confianza)
             c_b1, c_b2, c_b3 = st.columns(3)
+            n_ok = sum(1 for e in batch_results if not e.get("is_ood"))
             with c_b1:
-                avg_conf = np.mean([e["confidence"] for e in batch_results]) * 100
-                st.markdown(f"""<div class="metric-card">
-                    <h3>{avg_conf:.1f}%</h3>
-                    <p>Confianza media</p></div>""", unsafe_allow_html=True)
+                if n_ok > 0:
+                    avg_conf = np.mean([e["confidence"] for e in batch_results
+                                        if not e.get("is_ood")]) * 100
+                    st.markdown(f"""<div class="metric-card">
+                        <h3>{avg_conf:.1f}%</h3>
+                        <p>Confianza media ({n_ok} aceptadas)</p></div>""",
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown("""<div class="metric-card">
+                        <h3>—</h3>
+                        <p>Todas rechazadas por OOD</p></div>""", unsafe_allow_html=True)
             with c_b2:
                 avg_lat = np.mean([e["latency_ms"] for e in batch_results])
                 st.markdown(f"""<div class="metric-card">
                     <h3>{avg_lat:.1f} ms</h3>
                     <p>Latencia media</p></div>""", unsafe_allow_html=True)
             with c_b3:
-                n_ood = sum(1 for e in batch_results if e["entropy"] > ood_threshold)
+                n_ood = sum(1 for e in batch_results if e.get("is_ood"))
+                n_tot = len(batch_results)
+                pct_ood = (n_ood / n_tot * 100) if n_tot else 0.0
                 st.markdown(f"""<div class="metric-card">
-                    <h3>{n_ood} / {len(batch_results)}</h3>
-                    <p>OOD detectados</p></div>""", unsafe_allow_html=True)
+                    <h3>{n_ood} / {n_tot}</h3>
+                    <p>OOD detectados ({pct_ood:.0f} %)</p></div>""",
+                    unsafe_allow_html=True)
 
-            # Distribución de expertos usados en el batch
+            # Distribución de expertos — solo las aceptadas
             exp_counts = np.zeros(5, dtype=int)
             for e in batch_results:
-                exp_counts[e["expert_idx"]] += 1
+                if not (e.get("is_ood") and block_ood_inference):
+                    exp_counts[e["expert_idx"]] += 1
 
             fig_dist = go.Figure(go.Bar(
                 x=[EXPERTS_UI[i]["name"].split("—")[1].strip() for i in range(5)],

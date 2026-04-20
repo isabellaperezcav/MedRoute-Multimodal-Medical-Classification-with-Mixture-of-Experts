@@ -5,7 +5,7 @@ arquitectura y carga sus pesos desde checkpoint.
 
 Mapa de expertos
 ----------------
-  0 → Experto 1 (NIH ChestX-ray14) → ConvNeXt-Tiny   | 6 clases  multilabel
+  0 → Experto 1 (NIH ChestX-ray14) → ConvNeXt-Tiny     | 6 clases  multilabel
   1 → Experto 2 (Osteoartritis)     → EfficientNet-B0  | 5 clases
   2 → Experto 3 (ISIC 2019)         → ConvNeXt-Small   | 8 clases
   3 → Experto 4 (LUNA16 3D)         → DenseNet 3D      | 2 clases binario
@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 from typing import Dict, Optional, Tuple
-
+from typing import Union
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Arquitecturas 3D propias (DenseNet3D y ResNet3D)
@@ -259,7 +259,7 @@ def _build_expert5(ckpt_path: Path) -> nn.Module:
 
 # Mapa: expert_id → (carpeta_relativa, nombre_ckpt, builder_fn)
 _EXPERT_CONFIG = {
-    0: ("expertos/experto1_Xray",     "ckpt_exp1v16_f2_best.pt",  _build_expert1),
+    0: ("expertos/experto1_Xray",     "ckpt_exp1v21_f0_best.pt",  _build_expert1),
     1: ("expertos/experto2_osteo",    "expert2_osteo_best.pth",   _build_expert2),
     2: ("expertos/experto3_isic",     "expert3_isic_best.pth",    _build_expert3),
     3: ("expertos/experto4_luna",     "LUNA-LIDCIDRI_best.pt",    _build_expert4),

@@ -108,7 +108,6 @@ class MoEModel(nn.Module):
         if self.use_fp16:
             x_proc = x_proc.half()
         z = self.backbone(x_proc)  # (B, d_model)
-
         # 3. Router → expert_id (toma primer elemento del batch para routing)
         z_np       = z[0].float().cpu().numpy()
         router_info = self.router.predict_with_scores(z_np)

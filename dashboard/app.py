@@ -121,18 +121,25 @@ st.markdown("""
 # ─── Metadatos de expertos (fuente de verdad visual del dashboard) ────────────
 # Nota: EXPERT_META en experts.py contiene task/num_classes.
 # Aquí añadimos información adicional para la UI.
+# Fuente de verdad: moe/experts/wrappers.py::EXPERT_SPECS.
+# El router fue entrenado con embeddings/-.py EXPERT_MAP = {chest:0, isic:1, osteo:2, luna:3, panc:4}.
+# Los nombres de archivo "expert2_osteo" y "expert3_isic" son heredados del PDF y estan invertidos
+# respecto al label real del router (ver nota "naming local invertido" en wrappers.py:92).
 EXPERTS_UI = {
-    0: {"name": "Exp1 — ChestX-ray14",  "arch": "ConvNeXt-Tiny",  "dataset": "NIH ChestX-ray14",   "task": "Multilabel 6 patologías"},
-    1: {"name": "Exp2 — Osteoartritis", "arch": "EfficientNet-B0", "dataset": "OA Knee X-ray",      "task": "5 grados KL"},
-    2: {"name": "Exp3 — ISIC 2019",     "arch": "ConvNeXt-Small",  "dataset": "ISIC 2019",           "task": "8 clases dermato."},
-    3: {"name": "Exp4 — LUNA16 CT",     "arch": "DenseNet 3D",     "dataset": "LUNA16 / LIDC-IDRI",  "task": "Nódulo pulmonar 2 clases"},
-    4: {"name": "Exp5 — Páncreas CT",   "arch": "ResNet 3D",       "dataset": "Pancreatic Cancer CT","task": "2 clases"},
+    0: {"name": "Exp1 — ChestX-ray14",  "arch": "ConvNeXt-V2 Base 384", "dataset": "NIH ChestX-ray14",   "task": "Multilabel 6 patologías"},
+    1: {"name": "Exp2 — ISIC 2019",     "arch": "EfficientNet-B3",      "dataset": "ISIC 2019",           "task": "Multiclase 8 clases dermato."},
+    2: {"name": "Exp3 — Osteoartritis", "arch": "EfficientNet-B0",      "dataset": "OA Knee X-ray",       "task": "5 grados KL"},
+    3: {"name": "Exp4 — LUNA16 CT",     "arch": "DenseNet-3D",          "dataset": "LUNA16 / LIDC-IDRI",  "task": "Nódulo pulmonar 2 clases"},
+    4: {"name": "Exp5 — Páncreas CT",   "arch": "R3D-18",               "dataset": "Pancreatic Cancer CT","task": "Tumor 2 clases"},
 }
 
+# Las listas de etiquetas tienen que coincidir con EXPERT_SPECS[label].class_names:
+#   ISIC 2019: 8 clases MEL/NV/BCC/AK/BKL/DF/VASC/SCC (ojo: "AK", no "AKIEC", segun wrappers.py:87).
+#   Osteoartritis: 5 clases Normal/Dudoso/Leve/Moderado/Severo (wrappers.py:103).
 LABELS_UI = {
-    0: ["Atelectasis", "Cardiomegaly", "Effusion", "Infiltration", "Mass", "Nodule"],
-    1: ["KL-0 Normal", "KL-1 Dudoso", "KL-2 Leve", "KL-3 Moderado", "KL-4 Severo"],
-    2: ["MEL", "NV", "BCC", "AKIEC", "BKL", "DF", "VASC", "SCC"],
+    0: ["Infiltration", "Effusion", "Atelectasis", "Nodule", "Mass", "Pneumothorax"],
+    1: ["MEL", "NV", "BCC", "AK", "BKL", "DF", "VASC", "SCC"],
+    2: ["KL-0 Normal", "KL-1 Dudoso", "KL-2 Leve", "KL-3 Moderado", "KL-4 Severo"],
     3: ["Sin nódulo", "Con nódulo"],
     4: ["Normal", "Con tumor"],
 }

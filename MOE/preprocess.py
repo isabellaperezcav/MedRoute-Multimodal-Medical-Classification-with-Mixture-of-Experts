@@ -56,6 +56,21 @@ def normalize_2d(t: torch.Tensor) -> torch.Tensor:
 
 
 def normalize_3d(t: torch.Tensor) -> torch.Tensor:
+    """
+    Normaliza un volumen 3D a [0, 1].
+
+    [FIX pipeline-3D] Detecta si el volumen YA viene normalizado en [0, 1]
+    (caso de los .npy preprocesados offline como candidate_000123.npy de
+    LUNA16_LIDCIDRI_transformation). Aplicarle HU clip otra vez colapsa
+    todo a una constante ~0,714 y el ViT produce CLS genericos.
+
+    - Si t en [0, 1] aprox: solo clamp defensivo, sin re-normalizar.
+    - Si t en HU crudo: clamp a [-1000, 400] y escalar a [0, 1].
+    """
+    t_min = float(t.min())
+    t_max = float(t.max())
+    if t_min >= -0.1 and t_max <= 1.1:
+        return t.clamp(0.0, 1.0)
     t = t.clamp(HU_MIN, HU_MAX)
     return (t - HU_MIN) / (HU_MAX - HU_MIN)
 

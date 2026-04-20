@@ -36,7 +36,7 @@ class SharedBackbone(nn.Module):
         pretrained:  bool = True,
         freeze:      bool = True,
         device:      str  = "cpu",
-        n_slices_3d: int  = 8,
+        n_slices_3d: int  = 5,
     ):
         super().__init__()
         import timm
@@ -94,27 +94,48 @@ class SharedBackbone(nn.Module):
         """
         (B, 1, D, H, W) → (B, d_model)
         Slice-pooling: toma N slices centrales en el eje D,
-        los convierte a RGB, pasa por el ViT, y promedia.
+        los convierte a RGB, aplica ImageNet normalize (igual que NB03),
+        pasa por el ViT, y promedia.
+
+        [FIX pipeline-3D] ImageNet normalize obligatoria antes del ViT
+        (el ViT-Tiny preentrenado espera mean/std ImageNet). Sin esto el
+        CLS cae fuera del manifold del indice kNN y el router routea mal.
         """
         import torch.nn.functional as F
 
         x   = x.to(self.device)
+        # dtype del modelo ViT (half si use_fp16, float32 normal)
+        vit_dtype = next(self.vit.parameters()).dtype
+        x = x.to(vit_dtype)
+
         B, C, D, H, W = x.shape
 
         # Seleccionar slices centrales
         start  = max(0, D // 2 - self.n_slices_3d // 2)
         end    = min(D, start + self.n_slices_3d)
-        slices = x[:, :, start:end, :, :]  # (B, 1, n, H, W)
+        slices = x[:, :, start:end, :, :].contiguous()   # (B, 1, n, H, W)
 
-        # Interpolate slices to 224x224 si hace falta
+        # ImageNet stats en el mismo device/dtype que el ViT.
+        # [FIX CUDA illegal memory access] sin casteo explicito el broadcast
+        # entre float32 (mean/std) y half (sl cuando use_fp16) provoca
+        # mismatch asincrono que se reporta como "illegal memory access".
+        imagenet_mean = torch.tensor(
+            [0.485, 0.456, 0.406], dtype=vit_dtype, device=self.device
+        ).view(1, 3, 1, 1)
+        imagenet_std = torch.tensor(
+            [0.229, 0.224, 0.225], dtype=vit_dtype, device=self.device
+        ).view(1, 3, 1, 1)
+
         n   = slices.shape[2]
         cls_list = []
 
         for i in range(n):
             sl = slices[:, :, i, :, :]                        # (B, 1, H, W)
-            sl = sl.repeat(1, 3, 1, 1)                        # (B, 3, H, W)
+            sl = sl.repeat(1, 3, 1, 1).contiguous()            # (B, 3, H, W)
             sl = F.interpolate(sl, size=(224, 224),
                                mode="bilinear", align_corners=False)
+            sl = (sl - imagenet_mean) / imagenet_std          # [FIX] ImageNet norm
+            sl = sl.contiguous()
             cls_list.append(self.vit(sl))                      # (B, d_model)
 
         # Promediar sobre slices → (B, d_model)
@@ -128,7 +149,7 @@ def build_backbone(
     model_name:  str  = "vit_tiny_patch16_224",
     pretrained:  bool = True,
     device:      str  = "cpu",
-    n_slices_3d: int  = 8,
+    n_slices_3d: int  = 5,
 ) -> SharedBackbone:
     """Construye y devuelve el backbone listo para usar."""
     bb = SharedBackbone(

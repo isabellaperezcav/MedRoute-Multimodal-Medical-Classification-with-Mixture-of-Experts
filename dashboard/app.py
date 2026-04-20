@@ -451,12 +451,18 @@ def is_nifti_bytes(file_bytes: bytes) -> bool:
     return file_bytes[:4] in [b'\x5c\x01\x00\x00', b'\x00\x00\x01\x5c']
 
 
-def load_nifti_bytes(file_bytes: bytes):
-    """Carga un NIfTI desde bytes en memoria. Devuelve (volume_np, shape_str)."""
+def load_nifti_bytes(file_bytes: bytes, fname: str = ""):
+    """
+    Carga un NIfTI desde bytes en memoria. Devuelve (volume_np, shape_str).
+    Acepta tanto .nii como .nii.gz — el sufijo del tempfile se elige en función
+    del nombre original para que nibabel detecte la compresión correctamente.
+    """
     try:
         import nibabel as nib
         import tempfile, os
-        with tempfile.NamedTemporaryFile(suffix=".nii", delete=False) as tmp:
+        # Elegir sufijo correcto: nibabel necesita .nii.gz para gzip
+        suffix = ".nii.gz" if fname.lower().endswith(".gz") else ".nii"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
         img    = nib.load(tmp_path)
@@ -467,6 +473,206 @@ def load_nifti_bytes(file_bytes: bytes):
         st.warning(f"nibabel no disponible o archivo inválido: {exc}. Usando volumen simulado.")
         vol = np.random.randint(40, 180, (64, 64, 64), dtype=np.uint8).astype(np.float32)
         return vol, "(64, 64, 64) [simulado]"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  NUEVA FUNCIÓN — load_medical_input
+#  Wrapper de entrada que detecta tipo de archivo y lo normaliza antes de
+#  pasarlo al pipeline MoE. NO modifica preprocess.py ni ninguna función
+#  existente. Solo prepara la "materia prima" que ya recibía real_inference().
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_medical_input(uploaded_file) -> dict:
+    """
+    Carga y normaliza cualquier input médico soportado:
+        - PNG / JPG / JPEG  → imagen 2D
+        - .npy              → volumen 3D (o imagen 2D si ndim <= 3 con C≤4)
+        - .nii / .nii.gz    → volumen NIfTI 3D
+
+    Retorna un dict estandarizado con TODOS los campos que necesita el
+    bloque de UI y real_inference(). El código existente sigue funcionando
+    sin cambios porque recibe exactamente los mismos tipos que antes.
+
+    Campos devueltos
+    ----------------
+    data          : PIL.Image  (2D) o np.ndarray float32 (3D, shape D×H×W)
+    modality      : "2D" | "3D"
+    orig_shape    : tuple  — shape original antes de cualquier resize
+    is_volumetric : bool   — True para .npy 3D y .nii
+    file_type     : str    — "png/jpg" | "npy" | "nifti"
+    preview_pil   : PIL.Image — slice central para visualizar en la UI
+    volume        : np.ndarray | None — array 3D float32, None si 2D
+    n_slices      : int    — número de slices en eje Z (1 si 2D)
+    error         : str | None — mensaje de error si algo falló
+    """
+    result = {
+        "data":          None,
+        "modality":      "2D",
+        "orig_shape":    (),
+        "is_volumetric": False,
+        "file_type":     "unknown",
+        "preview_pil":   None,
+        "volume":        None,
+        "n_slices":      1,
+        "error":         None,
+    }
+
+    try:
+        file_bytes = uploaded_file.read()
+        fname      = uploaded_file.name.lower()
+
+        # ── 1. NIfTI (.nii / .nii.gz) ─────────────────────────────────────
+        if fname.endswith((".nii", ".nii.gz")) or is_nifti_bytes(file_bytes):
+            volume, _ = load_nifti_bytes(file_bytes, fname=fname)   # fname → sufijo correcto para .nii.gz
+            volume    = volume.astype(np.float32)
+
+            result["file_type"]     = "nifti"
+            result["modality"]      = "3D"
+            result["is_volumetric"] = True
+            result["orig_shape"]    = volume.shape
+            result["volume"]        = volume
+            result["n_slices"]      = volume.shape[2] if volume.ndim >= 3 else 1
+
+            # Preview: slice central normalizado a [0,255]
+            mid      = result["n_slices"] // 2
+            sl       = volume[:, :, mid] if volume.ndim >= 3 else volume
+            sl_u8    = _normalize_slice_to_uint8(sl)
+            result["preview_pil"] = Image.fromarray(sl_u8).convert("RGB")
+            result["data"]        = volume
+
+        # ── 2. NumPy .npy ──────────────────────────────────────────────────
+        elif fname.endswith(".npy"):
+            arr = np.load(io.BytesIO(file_bytes)).astype(np.float32)
+
+            # Detectar si es 2D o 3D por shape
+            #   ndim == 2             → (H, W)            → 2D grayscale
+            #   ndim == 3, C <= 4     → (H, W, C)         → 2D imagen RGB/RGBA/L
+            #   ndim == 3, C >> 4     → (D, H, W)         → 3D volumen
+            #   ndim == 4             → (D, H, W, C) o (C, D, H, W) → 3D volumen
+            is_3d = _npy_is_3d(arr)
+
+            if is_3d:
+                # Asegurar orden (D, H, W) — si viene (C, D, H, W) con C pequeño, quitamos C
+                volume = _npy_to_dhw(arr)
+
+                result["file_type"]     = "npy"
+                result["modality"]      = "3D"
+                result["is_volumetric"] = True
+                result["orig_shape"]    = volume.shape
+                result["volume"]        = volume
+                result["n_slices"]      = volume.shape[2] if volume.ndim >= 3 else 1
+
+                mid   = result["n_slices"] // 2
+                sl    = volume[:, :, mid] if volume.ndim >= 3 else volume
+                sl_u8 = _normalize_slice_to_uint8(sl)
+                result["preview_pil"] = Image.fromarray(sl_u8).convert("RGB")
+                result["data"]        = volume
+
+            else:
+                # 2D numpy → convertir a PIL Image
+                if arr.ndim == 2:
+                    img_u8 = _normalize_slice_to_uint8(arr)
+                    pil    = Image.fromarray(img_u8).convert("RGB")
+                elif arr.ndim == 3:
+                    # (H, W, C) con C ≤ 4
+                    if arr.max() <= 1.0:
+                        arr = (arr * 255).clip(0, 255)
+                    pil = Image.fromarray(arr.astype(np.uint8))
+                    if pil.mode not in ("RGB", "L"):
+                        pil = pil.convert("RGB")
+                else:
+                    raise ValueError(f"Array .npy con shape inesperado: {arr.shape}")
+
+                result["file_type"]   = "npy"
+                result["modality"]    = "2D"
+                result["orig_shape"]  = arr.shape
+                result["preview_pil"] = pil
+                result["data"]        = pil
+                result["n_slices"]    = 1
+
+        # ── 3. Imagen 2D estándar (PNG / JPG / JPEG / BMP / TIFF) ─────────
+        else:
+            pil = Image.open(io.BytesIO(file_bytes))
+            result["file_type"]   = "png/jpg"
+            result["modality"]    = "2D"
+            result["orig_shape"]  = (*pil.size,)      # (W, H)
+            result["preview_pil"] = pil
+            result["data"]        = pil
+            result["n_slices"]    = 1
+
+    except Exception as exc:
+        result["error"] = str(exc)
+        # Devolver imagen negra como fallback para no romper la UI
+        blank = Image.fromarray(np.zeros((224, 224, 3), dtype=np.uint8))
+        result["preview_pil"] = blank
+        result["data"]        = blank
+        result["modality"]    = "error"
+        result["orig_shape"]  = (224, 224)
+
+    return result
+
+
+# ── Helpers internos de load_medical_input ─────────────────────────────────────
+#   Funciones privadas (prefijo _lmi_) — NO modifican ninguna función existente.
+
+def _normalize_slice_to_uint8(arr: np.ndarray) -> np.ndarray:
+    """Normaliza un array 2D float a uint8 [0,255] para visualización."""
+    a = arr.astype(np.float32)
+    lo, hi = a.min(), a.max()
+    if hi - lo < 1e-8:
+        return np.zeros_like(a, dtype=np.uint8)
+    return ((a - lo) / (hi - lo) * 255).astype(np.uint8)
+
+
+def _npy_is_3d(arr: np.ndarray) -> bool:
+    """
+    Heurística para decidir si un array .npy es un volumen 3D médico.
+    Regla: si ndim >= 3 y la dimensión más pequeña de las primeras dos
+    axes es > 4, lo tratamos como volumen.
+    """
+    if arr.ndim == 4:
+        return True
+    if arr.ndim == 3:
+        # (H, W, C) con C en {1,2,3,4} → 2D imagen
+        if arr.shape[2] <= 4:
+            return False
+        # (D, H, W) con todas las dims grandes → 3D
+        return True
+    return False   # ndim <= 2 siempre es 2D
+
+
+def _npy_to_dhw(arr: np.ndarray) -> np.ndarray:
+    """
+    Convierte array 3D/4D a forma canónica (D, H, W) float32.
+    Maneja:  (D,H,W), (H,W,D), (C,D,H,W) con C pequeño, (D,H,W,C) con C pequeño.
+    """
+    if arr.ndim == 3:
+        # Ya es (D, H, W) — tomamos tal cual
+        return arr
+    if arr.ndim == 4:
+        # Si primera dimensión es pequeña (canal) → (C, D, H, W) → tomar canal 0
+        if arr.shape[0] <= 4:
+            return arr[0]
+        # Si última dimensión es pequeña → (D, H, W, C) → tomar canal 0
+        if arr.shape[3] <= 4:
+            return arr[..., 0]
+        # Asumir (D, H, W, extra) y colapsar
+        return arr.mean(axis=-1)
+    return arr
+
+
+def _get_volume_slice(volume: np.ndarray, axis: int, idx: int) -> np.ndarray:
+    """
+    Extrae un slice 2D de un volumen (D, H, W) dado eje e índice.
+    axis: 0=axial(Z), 1=coronal(Y), 2=sagital(X)
+    """
+    if axis == 0:
+        sl = volume[idx, :, :]
+    elif axis == 1:
+        sl = volume[:, idx, :]
+    else:
+        sl = volume[:, :, idx]
+    return sl
 
 
 def load_ablation_data() -> dict:
@@ -603,9 +809,10 @@ with col_left:
                 unsafe_allow_html=True)
 
     uploaded_file = st.file_uploader(
-        "Sube una imagen médica (PNG, JPEG, NIfTI)",
-        type=["png", "jpg", "jpeg", "nii"],
+        "Sube una imagen médica (PNG, JPEG, NIfTI, NumPy)",
+        type=["png", "jpg", "jpeg", "nii", "npy"],
         label_visibility="collapsed",
+        help="Formatos: imágenes 2D (PNG/JPG) · volúmenes NIfTI (.nii) · arrays NumPy 3D (.npy)",
     )
 
     # Variables de estado de la imagen actual
@@ -617,7 +824,7 @@ with col_left:
     using_demo     = False
 
     if uploaded_file is None:
-        st.info("⬆️ Sube una imagen médica para comenzar. Se acepta PNG, JPEG y NIfTI.")
+        st.info("⬆️ Sube una imagen médica para comenzar. Soporta PNG, JPEG, NIfTI (.nii) y NumPy (.npy).")
         # Imagen demo
         demo_arr = np.random.randint(60, 200, (224, 224, 3), dtype=np.uint8)
         demo_arr[80:140, 80:140] = [200, 220, 240]
@@ -627,44 +834,92 @@ with col_left:
         using_demo = True
         st.caption("_Vista previa con imagen de demostración_")
     else:
-        file_bytes = uploaded_file.read()
         using_demo = False
 
-        # ── Detección de modalidad ────────────────────────────────────────
-        if is_nifti_bytes(file_bytes) or uploaded_file.name.lower().endswith((".nii", ".nii.gz")):
-            is_nifti_input = True
-            modality_label = "3D (NIfTI)"
-            st.warning("🗃️ Archivo NIfTI detectado (3D). Mostrando slice central.")
+        # ── Detección y carga via load_medical_input (nueva función) ─────
+        #   Llama al wrapper nuevo. Toda la lógica de detección está allí.
+        #   Las variables img_pil / nifti_volume / is_nifti_input / orig_size
+        #   se asignan desde el resultado para mantener compatibilidad total
+        #   con real_inference() y el bloque de preprocesado que sigue.
+        med = load_medical_input(uploaded_file)
 
-            nifti_volume, shape_str = load_nifti_bytes(file_bytes)
-            orig_size = nifti_volume.shape
+        if med["error"]:
+            st.error(f"❌ Error al cargar el archivo: {med['error']}")
 
-            # Slice central para visualización
-            mid = nifti_volume.shape[2] // 2 if nifti_volume.ndim == 3 else 32
-            slice_2d = nifti_volume[:, :, mid] if nifti_volume.ndim == 3 else nifti_volume[:, :, mid]
-            # Normalizar a [0,255] para PIL
-            s_min, s_max = slice_2d.min(), slice_2d.max()
-            slice_norm   = ((slice_2d - s_min) / (s_max - s_min + 1e-8) * 255).astype(np.uint8)
-            img_pil      = Image.fromarray(slice_norm).convert("RGB")
+        # ── Mapear campos del resultado a las variables existentes ─────────
+        modality_label = med["modality"]
+        orig_size      = med["orig_shape"]
+        is_nifti_input = med["is_volumetric"]   # True para .npy 3D y .nii
+        nifti_volume   = med["volume"]           # None si 2D
+        img_pil        = med["preview_pil"]      # siempre un PIL Image
 
-            st.image(img_pil, caption=f"Slice central ({mid}) — {uploaded_file.name}",
-                     use_container_width=True)
+        # ── Visualización adaptada por tipo ───────────────────────────────
+        if med["is_volumetric"] and med["volume"] is not None:
+            volume    = med["volume"]
+            n_slices  = med["n_slices"]
+            file_type = med["file_type"]
+
+            # Badge de formato
+            fmt_label = "NIfTI" if file_type == "nifti" else "NumPy .npy"
+            st.markdown(
+                f'<span class="badge badge-blue">🗂️ {fmt_label} · 3D · '
+                f'{volume.shape[0]}×{volume.shape[1]}×{volume.shape[2]} voxels</span>',
+                unsafe_allow_html=True,
+            )
+
+            # ── Selector de eje de visualización ──────────────────────────
+            axis_names  = ["Axial (Z)", "Coronal (Y)", "Sagital (X)"]
+            axis_limits = [volume.shape[2], volume.shape[1], volume.shape[0]]
+
+            col_ax, col_sl = st.columns([1, 2])
+            with col_ax:
+                axis_sel = st.selectbox(
+                    "Eje de visualización",
+                    options=[0, 1, 2],
+                    format_func=lambda i: axis_names[i],
+                    key="vol_axis",
+                )
+            with col_sl:
+                max_idx  = axis_limits[axis_sel] - 1
+                def_idx  = max_idx // 2
+                slice_idx = st.slider(
+                    f"Slice ({axis_names[axis_sel]})",
+                    min_value=0,
+                    max_value=max_idx,
+                    value=def_idx,
+                    key="vol_slice_idx",
+                    help=f"Navega los {max_idx + 1} slices del volumen en el eje seleccionado.",
+                )
+
+            # Extraer y mostrar el slice seleccionado
+            sl_arr = _get_volume_slice(volume, axis=axis_sel, idx=slice_idx)
+            sl_u8  = _normalize_slice_to_uint8(sl_arr)
+            img_pil = Image.fromarray(sl_u8).convert("RGB")   # actualizar preview
+
+            st.image(
+                img_pil,
+                caption=(f"{axis_names[axis_sel]} · slice {slice_idx}/{max_idx} — "
+                         f"{uploaded_file.name}"),
+                use_container_width=True,
+            )
+
+            # Mini-estadísticas del volumen
+            with st.expander("📊 Estadísticas del volumen"):
+                st.caption(
+                    f"**Shape:** {volume.shape}  ·  "
+                    f"**Min:** {volume.min():.1f}  ·  "
+                    f"**Max:** {volume.max():.1f}  ·  "
+                    f"**Media:** {volume.mean():.1f}  ·  "
+                    f"**Std:** {volume.std():.1f}"
+                )
 
         else:
-            # Imagen 2D estándar
-            try:
-                img_pil        = Image.open(io.BytesIO(file_bytes))
-                orig_size      = img_pil.size
-                arr_check      = np.array(img_pil)
-                modality_label = "3D" if arr_check.ndim == 4 else "2D"
-            except Exception as exc:
-                st.error(f"❌ No se pudo abrir la imagen: {exc}")
-                img_pil   = Image.fromarray(np.zeros((224, 224, 3), dtype=np.uint8))
-                orig_size = (224, 224)
-                modality_label = "error"
-
-            st.image(img_pil, caption=f"Imagen cargada: {uploaded_file.name}",
-                     use_container_width=True)
+            # Imagen 2D — comportamiento idéntico al original
+            st.image(
+                img_pil,
+                caption=f"Imagen cargada: {uploaded_file.name}",
+                use_container_width=True,
+            )
 
     # ── 2. Preprocesado Transparente ─────────────────────────────────────────
     st.markdown('<div class="section-title">🔧 2. Preprocesado Transparente</div>',
@@ -675,12 +930,14 @@ with col_left:
         if is_nifti_input:
             adapt_size_str = "64×64×64"
             norm_type      = "HU clip [-1000, 400] → [0,1]"
-            # Estadísticas del volumen crudo
-            vol_sample = nifti_volume[:64, :64, :64] if nifti_volume.shape[0] >= 64 else nifti_volume
+            # Tomar una muestra del volumen (hasta 64 en cada eje)
+            vol_s = nifti_volume
+            slices = tuple(slice(0, min(64, s)) for s in vol_s.shape)
+            vol_sample  = vol_s[slices]
             vol_clipped = np.clip(vol_sample, -1000, 400)
             vol_norm    = (vol_clipped - (-1000)) / (400 - (-1000))
-            norm_mean, norm_std = vol_norm.mean(), vol_norm.std()
-            norm_min,  norm_max = vol_norm.min(),  vol_norm.max()
+            norm_mean, norm_std = float(vol_norm.mean()), float(vol_norm.std())
+            norm_min,  norm_max = float(vol_norm.min()),  float(vol_norm.max())
         else:
             adapt_size_str = "224×224"
             norm_type      = "ImageNet (μ=[0.485,0.456,0.406], σ=[0.229,0.224,0.225])"
@@ -693,9 +950,19 @@ with col_left:
 
         # Tarjetas de métricas de preprocesado
         if is_nifti_input:
-            orig_str = f"{orig_size[0]}×{orig_size[1]}×{orig_size[2]}"
+            # 3D: orig_size es una tupla (D, H, W)
+            if len(orig_size) >= 3:
+                orig_str = f"{orig_size[0]}×{orig_size[1]}×{orig_size[2]}"
+            else:
+                orig_str = "×".join(str(d) for d in orig_size)
         else:
-            orig_str = f"{orig_size[0]}×{orig_size[1]}"
+            # 2D: PIL devuelve (W, H); numpy puede ser (H, W) o (H, W, C)
+            if len(orig_size) >= 2:
+                orig_str = f"{orig_size[0]}×{orig_size[1]}"
+                if len(orig_size) == 3:
+                    orig_str += f"×{orig_size[2]}"
+            else:
+                orig_str = str(orig_size)
 
         cols_pre = st.columns(3)
         with cols_pre[0]:
